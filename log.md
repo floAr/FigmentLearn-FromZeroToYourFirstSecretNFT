@@ -13,6 +13,8 @@ npm install
 
 --------------------------------------------------------------------------------------------
 
+npm install --save secretjs dotenv @iov/crypto
+
 cargo generate --git https://github.com/baedrik/snip721-reference-impl --name my-snip721
 
 cd my-snip721
@@ -30,6 +32,7 @@ gunzip contract.wasm.gz
 
 npm init svelte@next frontend
 cd my-app
+npm install --save secretjs @iov/crypto
 npm install
 npm run dev
 
