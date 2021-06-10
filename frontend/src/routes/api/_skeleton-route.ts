@@ -1,7 +1,9 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/explicit-module-boundary-types */
 
 // Load SecretJS components
 import { encodeSecp256k1Pubkey, EnigmaUtils, pubkeyToAddress, Secp256k1Pen, SigningCosmWasmClient } from 'secretjs'
+import type { HandleMsg, QueryMsg } from 'src/snip721';
 
 const customFees = {
     upload: {
@@ -26,13 +28,11 @@ const customFees = {
 const httpUrl = import.meta.env.VITE_SECRET_REST_URL as string;
 const mnemonic = import.meta.env.VITE_MNEMONIC as string;
 const contract = import.meta.env.VITE_SECRET_NFT_CONTRACT as string;
-/**
-
+const viewing_key = import.meta.env.VITE_SECRET_VIEWING_KEY as string;
 /**
  * @type {import('@sveltejs/kit').RequestHandler}
  */
-export async function get() {
-
+export async function get({ params }) {
     // A pen is the most basic tool you can think of for signing.
     // This wraps a single keypair and allows for signing.
     const signingPen = await Secp256k1Pen.fromMnemonic(mnemonic).catch((err) => {
@@ -56,22 +56,23 @@ export async function get() {
         customFees
     );
 
-    const queryMsg = {
-        tokens: {
-            owner: accAddress,
-        },
-    };
+    // const msg:QueryMsg = {}
+    // const msg:HandleMsg = {}
 
-    console.log("Reading all tokens");
     const response = await client
-        .queryContractSmart(contract, queryMsg)
+        .queryContractSmart(contract, msg)
+        // .execute(contract, msg)
         .catch((err) => {
             throw new Error(`Could not execute contract: ${err}`);
         });
-    console.log("response: ", response.token_list.tokens);
-    if (response.token_list.tokens.length == 0)
+    console.log("response: ", response);
+    if (response == null)
         console.log(
-            "No token was found for you account, make sure that the minting step completed successfully"
+            "Error executing / querying contract"
         );
-    return { body: response.token_list.tokens }
+    return {
+        body: {
+            //data
+        }
+    }
 };

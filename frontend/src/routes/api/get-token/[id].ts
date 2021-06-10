@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-module-boundary-types */
 
 // Load SecretJS components
 import { encodeSecp256k1Pubkey, EnigmaUtils, pubkeyToAddress, Secp256k1Pen, SigningCosmWasmClient } from 'secretjs'
@@ -54,8 +55,6 @@ export async function get({ params }) {
         txEncryptionSeed,
         customFees
     );
-    console.log(`Wallet address=${accAddress}`);
-
 
     const queryMsg = {
         nft_dossier: {
@@ -66,8 +65,6 @@ export async function get({ params }) {
             },
         },
     };
-
-    console.log("Reading all tokens");
     const response = await client
         .queryContractSmart(contract, queryMsg)
         .catch((err) => {

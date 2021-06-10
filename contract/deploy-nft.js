@@ -69,11 +69,11 @@ const main = async () => {
   const { codeId } = uploadReceipt;
   const initMsg = {
     /// name of token contract
-    name: "test",
+    name: "SecretAgentNFT",
     /// token contract symbol
-    symbol: "tst",
+    symbol: "SANFT",
     /// entropy used for prng seed
-    entropy: "sdsdsd",
+    entropy: "fsfthmmns234asdm3k4l149",
     /// optional privacy configuration for the contract
     config: {
       public_owner: true,
