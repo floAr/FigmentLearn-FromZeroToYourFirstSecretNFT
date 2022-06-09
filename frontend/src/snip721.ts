@@ -370,8 +370,7 @@ export interface ViewerInfo {
  * and run json-schema-to-typescript to regenerate this file.
  */
 
-export type QueryAnswer =
-    | {
+export type QueryAnswer = {
         contract_info: {
             name: string;
             symbol: string;
@@ -411,7 +410,6 @@ export type QueryAnswer =
             tokens: string[];
 
         };
-
     }
     | {
         owner_of: {

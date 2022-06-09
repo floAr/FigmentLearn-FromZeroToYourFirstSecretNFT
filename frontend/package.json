@@ -11,6 +11,7 @@
     "format": "prettier --write --plugin-search-dir=. ."
   },
   "devDependencies": {
+    "@keplr-wallet/types": "^0.10.5",
     "@sveltejs/kit": "next",
     "@typescript-eslint/eslint-plugin": "^4.19.0",
     "@typescript-eslint/parser": "^4.19.0",
@@ -29,6 +30,6 @@
   "dependencies": {
     "@iov/crypto": "^2.5.0",
     "dotenv": "^10.0.0",
-    "secretjs": "^0.11.0"
+    "secretjs": "^1.3.0-beta.2"
   }
 }

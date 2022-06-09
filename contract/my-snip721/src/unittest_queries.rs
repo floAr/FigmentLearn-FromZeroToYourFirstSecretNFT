@@ -2,17 +2,17 @@
 mod tests {
     use crate::contract::{handle, init, query};
     use crate::expiration::Expiration;
+    use crate::mint_run::MintRunInfo;
     use crate::msg::{
-        AccessLevel, Cw721Approval, HandleMsg, InitConfig, InitMsg, QueryAnswer, QueryMsg,
-        Snip721Approval, Tx, TxAction, ViewerInfo,
+        AccessLevel, BatchNftDossierElement, Cw721Approval, HandleMsg, InitConfig, InitMsg, Mint,
+        QueryAnswer, QueryMsg, Snip721Approval, Tx, TxAction, ViewerInfo,
     };
-    use crate::token::Metadata;
+    use crate::token::{Extension, Metadata};
     use cosmwasm_std::testing::*;
     use cosmwasm_std::{
         from_binary, Binary, BlockInfo, Env, Extern, HumanAddr, InitResponse, MessageInfo,
         StdError, StdResult,
     };
-
     use std::any::Any;
 
     // Helper functions
@@ -29,6 +29,7 @@ mod tests {
             symbol: "S721".to_string(),
             admin: Some(HumanAddr("admin".to_string())),
             entropy: "We're going to need a bigger boat".to_string(),
+            royalty_info: None,
             config: None,
             post_init_callback: None,
         };
@@ -66,7 +67,7 @@ mod tests {
                 unwrapped_metadata_is_private,
                 minter_may_update_metadata,
                 owner_may_update_metadata,
-                enable_burn
+                enable_burn,
             )
             .as_bytes(),
         ))
@@ -76,6 +77,7 @@ mod tests {
             symbol: "S721".to_string(),
             admin: Some(HumanAddr("admin".to_string())),
             entropy: "We're going to need a bigger boat".to_string(),
+            royalty_info: None,
             config: Some(init_config),
             post_init_callback: None,
         };
@@ -88,7 +90,7 @@ mod tests {
             Ok(_response) => panic!("Expected error, but had Ok response"),
             Err(err) => match err {
                 StdError::GenericErr { msg, .. } => msg,
-                _ => panic!(format!("Unexpected error result {:?}", err)),
+                _ => panic!("Unexpected error result {:?}", err),
             },
         }
     }
@@ -219,11 +221,18 @@ mod tests {
             token_id: Some("NFT1".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My1".to_string()),
-                description: Some("Public 1".to_string()),
-                image: Some("URI 1".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My1".to_string()),
+                    description: Some("Public 1".to_string()),
+                    image: Some("URI 1".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -232,11 +241,18 @@ mod tests {
             token_id: Some("NFT2".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My2".to_string()),
-                description: Some("Public 2".to_string()),
-                image: Some("URI 2".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My2".to_string()),
+                    description: Some("Public 2".to_string()),
+                    image: Some("URI 2".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -313,11 +329,18 @@ mod tests {
             token_id: Some("NFT1".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My1".to_string()),
-                description: Some("Public 1".to_string()),
-                image: Some("URI 1".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My1".to_string()),
+                    description: Some("Public 1".to_string()),
+                    image: Some("URI 1".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -326,11 +349,18 @@ mod tests {
             token_id: Some("NFT2".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My2".to_string()),
-                description: Some("Public 2".to_string()),
-                image: Some("URI 2".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My2".to_string()),
+                    description: Some("Public 2".to_string()),
+                    image: Some("URI 2".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -372,11 +402,18 @@ mod tests {
             token_id: Some("NFT1".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My1".to_string()),
-                description: Some("Public 1".to_string()),
-                image: Some("URI 1".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My1".to_string()),
+                    description: Some("Public 1".to_string()),
+                    image: Some("URI 1".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -385,28 +422,42 @@ mod tests {
             token_id: Some("NFT2".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My2".to_string()),
-                description: Some("Public 2".to_string()),
-                image: Some("URI 2".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My2".to_string()),
+                    description: Some("Public 2".to_string()),
+                    image: Some("URI 2".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg); // test burn when status prevents it
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT3".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My3".to_string()),
-                description: Some("Public 3".to_string()),
-                image: Some("URI 3".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My3".to_string()),
+                    description: Some("Public 3".to_string()),
+                    image: Some("URI 3".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg); // test burn when status prevents it
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
         // test non-minter attempt
         let alice = HumanAddr("alice".to_string());
@@ -488,11 +539,18 @@ mod tests {
             token_id: Some("NFT1".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My1".to_string()),
-                description: Some("Public 1".to_string()),
-                image: Some("URI 1".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My1".to_string()),
+                    description: Some("Public 1".to_string()),
+                    image: Some("URI 1".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -501,54 +559,82 @@ mod tests {
             token_id: Some("NFT2".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My2".to_string()),
-                description: Some("Public 2".to_string()),
-                image: Some("URI 2".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My2".to_string()),
+                    description: Some("Public 2".to_string()),
+                    image: Some("URI 2".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg); // test burn when status prevents it
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT3".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My3".to_string()),
-                description: Some("Public 3".to_string()),
-                image: Some("URI 3".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My3".to_string()),
+                    description: Some("Public 3".to_string()),
+                    image: Some("URI 3".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg); // test burn when status prevents it
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT5".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My5".to_string()),
-                description: Some("Public 5".to_string()),
-                image: Some("URI 5".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My5".to_string()),
+                    description: Some("Public 5".to_string()),
+                    image: Some("URI 5".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg); // test burn when status prevents it
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT4".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("My4".to_string()),
-                description: Some("Public 4".to_string()),
-                image: Some("URI 4".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("My4".to_string()),
+                    description: Some("Public 4".to_string()),
+                    image: Some("URI 4".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg); // test burn when status prevents it
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         let viewer = ViewerInfo {
             address: alice.clone(),
             viewing_key: "key".to_string(),
@@ -567,7 +653,50 @@ mod tests {
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
             QueryAnswer::TokenList { tokens } => {
-                let expected = vec!["NFT3".to_string(), "NFT4".to_string(), "NFT5".to_string()];
+                let expected = vec!["NFT3".to_string(), "NFT5".to_string(), "NFT4".to_string()];
+                assert_eq!(tokens, expected);
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // test start after token not found
+        let query_msg = QueryMsg::AllTokens {
+            viewer: Some(viewer.clone()),
+            start_after: Some("NFT21".to_string()),
+            limit: Some(10),
+        };
+        let query_result = query(&deps, query_msg);
+        let error = extract_error_msg(query_result);
+        assert!(error.contains("Token ID: NFT21 not found"));
+
+        // test burned token does not show
+        let handle_msg = HandleMsg::BurnNft {
+            token_id: "NFT3".to_string(),
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
+
+        let query_msg = QueryMsg::AllTokens {
+            viewer: Some(viewer.clone()),
+            start_after: None,
+            limit: Some(10),
+        };
+        let query_result = query(&deps, query_msg);
+        assert!(
+            query_result.is_ok(),
+            "query failed: {}",
+            query_result.err().unwrap()
+        );
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::TokenList { tokens } => {
+                let expected = vec![
+                    "NFT1".to_string(),
+                    "NFT2".to_string(),
+                    "NFT5".to_string(),
+                    "NFT4".to_string(),
+                ];
                 assert_eq!(tokens, expected);
             }
             _ => panic!("unexpected"),
@@ -614,14 +743,22 @@ mod tests {
         assert!(error.contains("You are not authorized to perform this action on token NFT1"));
 
         let public_meta = Metadata {
-            name: Some("Name1".to_string()),
-            description: Some("PubDesc1".to_string()),
-            image: Some("PubUri1".to_string()),
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("Name1".to_string()),
+                description: Some("PubDesc1".to_string()),
+                image: Some("PubUri1".to_string()),
+                ..Extension::default()
+            }),
         };
         let private_meta = Metadata {
-            name: Some("PrivName1".to_string()),
-            description: Some("PrivDesc1".to_string()),
-            image: Some("PrivUri1".to_string()),
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("PrivName1".to_string()),
+                description: Some("PrivDesc1".to_string()),
+                image: Some("PrivUri1".to_string()),
+                ..Extension::default()
+            }),
         };
         let alice = HumanAddr("alice".to_string());
         let bob = HumanAddr("bob".to_string());
@@ -632,6 +769,9 @@ mod tests {
             owner: Some(alice.clone()),
             public_metadata: Some(public_meta.clone()),
             private_metadata: Some(private_meta.clone()),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -690,6 +830,10 @@ mod tests {
                 owner,
                 public_metadata,
                 private_metadata,
+                royalty_info: _,
+                mint_run_info: _,
+                transferable,
+                unwrapped,
                 display_private_metadata_error,
                 owner_is_public,
                 public_ownership_expiration,
@@ -706,6 +850,8 @@ mod tests {
                     Some("You are not authorized to perform this action on token NFT1".to_string())
                 );
                 assert!(owner_is_public);
+                assert!(transferable);
+                assert!(!unwrapped);
                 assert_eq!(public_ownership_expiration, Some(Expiration::Never));
                 assert!(!private_metadata_is_public);
                 assert!(private_metadata_is_public_expiration.is_none());
@@ -730,6 +876,9 @@ mod tests {
             owner: Some(alice.clone()),
             public_metadata: Some(public_meta.clone()),
             private_metadata: Some(private_meta.clone()),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -785,6 +934,10 @@ mod tests {
                 owner,
                 public_metadata,
                 private_metadata,
+                royalty_info: _,
+                mint_run_info: _,
+                transferable,
+                unwrapped,
                 display_private_metadata_error,
                 owner_is_public,
                 public_ownership_expiration,
@@ -798,6 +951,8 @@ mod tests {
                 assert_eq!(private_metadata, Some(private_meta.clone()));
                 assert!(display_private_metadata_error.is_none());
                 assert!(owner_is_public);
+                assert!(transferable);
+                assert!(unwrapped);
                 assert_eq!(public_ownership_expiration, Some(Expiration::AtHeight(5)));
                 assert!(private_metadata_is_public);
                 assert_eq!(
@@ -880,6 +1035,10 @@ mod tests {
                 owner,
                 public_metadata,
                 private_metadata,
+                royalty_info: _,
+                mint_run_info: _,
+                transferable,
+                unwrapped,
                 display_private_metadata_error,
                 owner_is_public,
                 public_ownership_expiration,
@@ -891,6 +1050,8 @@ mod tests {
                 assert_eq!(owner, Some(alice.clone()));
                 assert_eq!(public_metadata, Some(public_meta.clone()));
                 assert_eq!(private_metadata, Some(private_meta.clone()));
+                assert!(transferable);
+                assert!(unwrapped);
                 assert!(display_private_metadata_error.is_none());
                 assert!(owner_is_public);
                 assert_eq!(public_ownership_expiration, Some(Expiration::AtHeight(5)));
@@ -978,6 +1139,10 @@ mod tests {
                 owner,
                 public_metadata,
                 private_metadata,
+                royalty_info: _,
+                mint_run_info: _,
+                transferable,
+                unwrapped,
                 display_private_metadata_error,
                 owner_is_public,
                 public_ownership_expiration,
@@ -989,6 +1154,8 @@ mod tests {
                 assert_eq!(owner, Some(alice.clone()));
                 assert_eq!(public_metadata, Some(public_meta.clone()));
                 assert_eq!(private_metadata, Some(private_meta.clone()));
+                assert!(transferable);
+                assert!(unwrapped);
                 assert!(display_private_metadata_error.is_none());
                 assert!(!owner_is_public);
                 assert!(public_ownership_expiration.is_none());
@@ -1018,6 +1185,10 @@ mod tests {
                 owner,
                 public_metadata,
                 private_metadata,
+                royalty_info: _,
+                mint_run_info: _,
+                transferable,
+                unwrapped,
                 display_private_metadata_error,
                 owner_is_public,
                 public_ownership_expiration,
@@ -1029,6 +1200,8 @@ mod tests {
                 assert_eq!(owner, Some(alice.clone()));
                 assert_eq!(public_metadata, Some(public_meta.clone()));
                 assert_eq!(private_metadata, Some(private_meta.clone()));
+                assert!(transferable);
+                assert!(unwrapped);
                 assert!(display_private_metadata_error.is_none());
                 assert!(!owner_is_public);
                 assert!(public_ownership_expiration.is_none());
@@ -1072,6 +1245,9 @@ mod tests {
             owner: Some(alice.clone()),
             public_metadata: Some(public_meta.clone()),
             private_metadata: Some(private_meta.clone()),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1142,6 +1318,10 @@ mod tests {
                 owner,
                 public_metadata,
                 private_metadata,
+                royalty_info: _,
+                mint_run_info: _,
+                transferable,
+                unwrapped,
                 display_private_metadata_error,
                 owner_is_public,
                 public_ownership_expiration,
@@ -1153,7 +1333,9 @@ mod tests {
                 assert_eq!(owner, Some(alice.clone()));
                 assert_eq!(public_metadata, Some(public_meta.clone()));
                 assert!(private_metadata.is_none());
-                assert_eq!(display_private_metadata_error, Some("Sealed metadata must be unwrapped by calling Reveal before it can be viewed".to_string()));
+                assert!(transferable);
+                assert!(!unwrapped);
+                assert_eq!(display_private_metadata_error, Some("Sealed metadata of token NFT1 must be unwrapped by calling Reveal before it can be viewed".to_string()));
                 assert!(!owner_is_public);
                 assert!(public_ownership_expiration.is_none());
                 assert!(!private_metadata_is_public);
@@ -1191,6 +1373,10 @@ mod tests {
                 owner,
                 public_metadata,
                 private_metadata,
+                royalty_info: _,
+                mint_run_info: _,
+                transferable,
+                unwrapped,
                 display_private_metadata_error,
                 owner_is_public,
                 public_ownership_expiration,
@@ -1202,6 +1388,8 @@ mod tests {
                 assert!(owner.is_none());
                 assert_eq!(public_metadata, Some(public_meta.clone()));
                 assert!(private_metadata.is_none());
+                assert!(transferable);
+                assert!(unwrapped);
                 assert_eq!(
                     display_private_metadata_error,
                     Some("Access to token NFT1 has expired".to_string())
@@ -1245,6 +1433,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1254,6 +1445,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1263,6 +1457,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1272,6 +1469,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1281,6 +1481,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1290,6 +1493,33 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT7".to_string()),
+            owner: Some(HumanAddr("bob".to_string())),
+            public_metadata: None,
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT8".to_string()),
+            owner: Some(HumanAddr("charlie".to_string())),
+            public_metadata: None,
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1315,6 +1545,65 @@ mod tests {
                     "NFT5".to_string(),
                     "NFT6".to_string(),
                 ];
+                assert_eq!(tokens, expected);
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // test a public inventory but not found
+        let query_msg = QueryMsg::Tokens {
+            owner: alice.clone(),
+            viewer: None,
+            viewing_key: None,
+            start_after: Some("NFT10".to_string()),
+            limit: Some(30),
+        };
+        let query_result = query(&deps, query_msg);
+        let error = extract_error_msg(query_result);
+        assert!(error.contains("Token ID: NFT10 is not in the specified inventory"));
+
+        // test not in a public inventory
+        let query_msg = QueryMsg::Tokens {
+            owner: alice.clone(),
+            viewer: None,
+            viewing_key: None,
+            start_after: Some("NFT7".to_string()),
+            limit: Some(30),
+        };
+        let query_result = query(&deps, query_msg);
+        let error = extract_error_msg(query_result);
+        assert!(error.contains("Token ID: NFT7 is not in the specified inventory"));
+
+        // test limit 0
+        let query_msg = QueryMsg::Tokens {
+            owner: alice.clone(),
+            viewer: None,
+            viewing_key: None,
+            start_after: None,
+            limit: Some(0),
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::TokenList { tokens } => {
+                assert!(tokens.is_empty());
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // test limit 1, paginated
+        let query_msg = QueryMsg::Tokens {
+            owner: alice.clone(),
+            viewer: None,
+            viewing_key: None,
+            start_after: Some("NFT3".to_string()),
+            limit: Some(1),
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::TokenList { tokens } => {
+                let expected = vec!["NFT4".to_string()];
                 assert_eq!(tokens, expected);
             }
             _ => panic!("unexpected"),
@@ -1410,14 +1699,8 @@ mod tests {
             limit: Some(30),
         };
         let query_result = query(&deps, query_msg);
-        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
-        match query_answer {
-            QueryAnswer::TokenList { tokens } => {
-                let expected = vec!["NFT4".to_string(), "NFT5".to_string(), "NFT6".to_string()];
-                assert_eq!(tokens, expected);
-            }
-            _ => panic!("unexpected"),
-        }
+        let error = extract_error_msg(query_result);
+        assert!(error.contains("Token ID: NFT34 is not in the specified inventory"));
 
         // test setting all tokens public
         let handle_msg = HandleMsg::SetGlobalApproval {
@@ -1451,6 +1734,268 @@ mod tests {
             }
             _ => panic!("unexpected"),
         }
+
+        // contract with private ownership
+        let (init_result, mut deps) = init_helper_default();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+        let charlie = HumanAddr("charlie".to_string());
+        let handle_msg = HandleMsg::SetViewingKey {
+            key: "akey".to_string(),
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
+        let handle_msg = HandleMsg::SetViewingKey {
+            key: "bkey".to_string(),
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
+        let handle_msg = HandleMsg::SetViewingKey {
+            key: "ckey".to_string(),
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("charlie", &[]), handle_msg);
+
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT1".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: None,
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT2".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: None,
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg); // test burn when status prevents it
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT3".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: None,
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT4".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: None,
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT5".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: None,
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT6".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: None,
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT7".to_string()),
+            owner: Some(HumanAddr("bob".to_string())),
+            public_metadata: None,
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT8".to_string()),
+            owner: Some(HumanAddr("charlie".to_string())),
+            public_metadata: None,
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT9".to_string()),
+            owner: Some(HumanAddr("charlie".to_string())),
+            public_metadata: None,
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+
+        let handle_msg = HandleMsg::SetWhitelistedApproval {
+            address: bob.clone(),
+            token_id: Some("NFT8".to_string()),
+            view_owner: Some(AccessLevel::ApproveToken),
+            view_private_metadata: None,
+            transfer: None,
+            expires: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("charlie", &[]), handle_msg);
+
+        let handle_msg = HandleMsg::SetWhitelistedApproval {
+            address: alice.clone(),
+            token_id: None,
+            view_owner: Some(AccessLevel::All),
+            view_private_metadata: None,
+            transfer: None,
+            expires: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("charlie", &[]), handle_msg);
+
+        let handle_msg = HandleMsg::SetWhitelistedApproval {
+            address: charlie.clone(),
+            token_id: Some("NFT5".to_string()),
+            view_owner: Some(AccessLevel::ApproveToken),
+            view_private_metadata: None,
+            transfer: None,
+            expires: None,
+            padding: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
+
+        // test a start after that is not in the inventory, but the viewer has permission on that token
+        let query_msg = QueryMsg::Tokens {
+            owner: alice.clone(),
+            viewer: Some(bob.clone()),
+            viewing_key: Some("bkey".to_string()),
+            start_after: Some("NFT8".to_string()),
+            limit: Some(30),
+        };
+        let query_result = query(&deps, query_msg);
+        let error = extract_error_msg(query_result);
+        assert!(error.contains("Token ID: NFT8 is not in the specified inventory"));
+
+        // test a start after that is not in the inventory, but viewer has token permission to view owner
+        let query_msg = QueryMsg::Tokens {
+            owner: charlie.clone(),
+            viewer: Some(alice.clone()),
+            viewing_key: Some("akey".to_string()),
+            start_after: Some("NFT7".to_string()),
+            limit: Some(30),
+        };
+        let query_result = query(&deps, query_msg);
+        let error = extract_error_msg(query_result);
+        assert!(error.contains("You are not authorized to perform this action on token NFT7"));
+
+        // test viewer has permission on start after token (but no other) does not error
+        let query_msg = QueryMsg::Tokens {
+            owner: charlie.clone(),
+            viewer: Some(bob.clone()),
+            viewing_key: Some("bkey".to_string()),
+            start_after: Some("NFT8".to_string()),
+            limit: Some(30),
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::TokenList { tokens } => {
+                assert!(tokens.is_empty());
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // test viewer has operator permission on start after token
+        let query_msg = QueryMsg::Tokens {
+            owner: charlie.clone(),
+            viewer: Some(alice.clone()),
+            viewing_key: Some("akey".to_string()),
+            start_after: Some("NFT8".to_string()),
+            limit: Some(30),
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::TokenList { tokens } => {
+                let expected = vec!["NFT9".to_string()];
+                assert_eq!(tokens, expected);
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // test a start after that viewer does not have permission on, although he does have permission
+        // on other tokens in the inventory
+        let query_msg = QueryMsg::Tokens {
+            owner: alice.clone(),
+            viewer: Some(charlie.clone()),
+            viewing_key: Some("ckey".to_string()),
+            start_after: Some("NFT3".to_string()),
+            limit: Some(30),
+        };
+        let query_result = query(&deps, query_msg);
+        let error = extract_error_msg(query_result);
+        assert!(error.contains("You are not authorized to perform this action on token NFT3"));
+
+        // test a bad viewing key
+        let query_msg = QueryMsg::Tokens {
+            owner: alice.clone(),
+            viewer: None,
+            viewing_key: Some("ckey".to_string()),
+            start_after: Some("NFT3".to_string()),
+            limit: Some(30),
+        };
+        let query_result = query(&deps, query_msg);
+        let error = extract_error_msg(query_result);
+        assert!(error.contains("Wrong viewing key for this address or viewing key not set"));
+
+        // test token not found with private supply and private ownership
+        let query_msg = QueryMsg::Tokens {
+            owner: alice.clone(),
+            viewer: Some(charlie.clone()),
+            viewing_key: Some("ckey".to_string()),
+            start_after: Some("NFT34".to_string()),
+            limit: Some(30),
+        };
+        let query_result = query(&deps, query_msg);
+        let error = extract_error_msg(query_result);
+        assert!(error.contains("You are not authorized to perform this action on token NFT34"));
     }
 
     // test IsUnwrapped query
@@ -1518,6 +2063,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1572,6 +2120,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1642,6 +2193,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1872,27 +2426,27 @@ mod tests {
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
             QueryAnswer::NftInfo {
-                name,
-                description,
-                image,
+                token_uri,
+                extension,
             } => {
-                assert!(name.is_none());
-                assert!(description.is_none());
-                assert!(image.is_none());
+                assert!(token_uri.is_none());
+                assert!(extension.is_none());
             }
             _ => panic!("unexpected"),
         }
         let alice = HumanAddr("alice".to_string());
         let public_meta = Metadata {
-            name: Some("Name1".to_string()),
-            description: Some("PubDesc1".to_string()),
-            image: Some("PubUri1".to_string()),
+            token_uri: Some("uri".to_string()),
+            extension: None,
         };
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT1".to_string()),
             owner: Some(alice.clone()),
             public_metadata: Some(public_meta.clone()),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1906,13 +2460,11 @@ mod tests {
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
             QueryAnswer::NftInfo {
-                name,
-                description,
-                image,
+                token_uri,
+                extension,
             } => {
-                assert_eq!(name, public_meta.name);
-                assert_eq!(description, public_meta.description);
-                assert_eq!(image, public_meta.image);
+                assert_eq!(token_uri, public_meta.token_uri);
+                assert_eq!(extension, public_meta.extension);
             }
             _ => panic!("unexpected"),
         }
@@ -1936,16 +2488,50 @@ mod tests {
         };
         let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
 
-        let public_meta = Metadata {
-            name: Some("Name1".to_string()),
-            description: Some("PubDesc1".to_string()),
-            image: Some("PubUri1".to_string()),
+        let meta_for_fail = Metadata {
+            token_uri: Some("uri".to_string()),
+            extension: Some(Extension {
+                name: Some("Name1".to_string()),
+                description: Some("PubDesc1".to_string()),
+                image: Some("PubUri1".to_string()),
+                ..Extension::default()
+            }),
         };
+
+        let public_meta = Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("Name1".to_string()),
+                description: Some("PubDesc1".to_string()),
+                image: Some("PubUri1".to_string()),
+                ..Extension::default()
+            }),
+        };
+
+        // test unable to have both token_uri and extension in the metadata
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFTfail".to_string()),
+            owner: Some(alice.clone()),
+            public_metadata: Some(meta_for_fail.clone()),
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let error = extract_error_msg(handle_result);
+        assert!(error.contains("Metadata can not have BOTH token_uri AND extension"));
+
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT1".to_string()),
             owner: Some(alice.clone()),
             public_metadata: Some(public_meta.clone()),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1984,6 +2570,9 @@ mod tests {
             owner: Some(alice.clone()),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -2038,15 +2627,22 @@ mod tests {
         let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
 
         let private_meta = Metadata {
-            name: Some("Name1".to_string()),
-            description: Some("PrivDesc1".to_string()),
-            image: Some("PrivUri1".to_string()),
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("Name1".to_string()),
+                description: Some("PrivDesc1".to_string()),
+                image: Some("PrivUri1".to_string()),
+                ..Extension::default()
+            }),
         };
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT1".to_string()),
             owner: Some(alice.clone()),
             public_metadata: None,
             private_metadata: Some(private_meta.clone()),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -2070,13 +2666,11 @@ mod tests {
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
             QueryAnswer::PrivateMetadata {
-                name,
-                description,
-                image,
+                token_uri,
+                extension,
             } => {
-                assert_eq!(name, private_meta.name);
-                assert_eq!(description, private_meta.description);
-                assert_eq!(image, private_meta.image);
+                assert_eq!(token_uri, private_meta.token_uri);
+                assert_eq!(extension, private_meta.extension);
             }
             _ => panic!("unexpected"),
         }
@@ -2099,13 +2693,11 @@ mod tests {
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
             QueryAnswer::PrivateMetadata {
-                name,
-                description,
-                image,
+                token_uri,
+                extension,
             } => {
-                assert_eq!(name, private_meta.name);
-                assert_eq!(description, private_meta.description);
-                assert_eq!(image, private_meta.image);
+                assert_eq!(token_uri, private_meta.token_uri);
+                assert_eq!(extension, private_meta.extension);
             }
             _ => panic!("unexpected"),
         }
@@ -2131,15 +2723,22 @@ mod tests {
         let _handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
 
         let private_meta = Metadata {
-            name: Some("Name1".to_string()),
-            description: Some("PrivDesc1".to_string()),
-            image: Some("PrivUri1".to_string()),
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("Name1".to_string()),
+                description: Some("PrivDesc1".to_string()),
+                image: Some("PrivUri1".to_string()),
+                ..Extension::default()
+            }),
         };
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT1".to_string()),
             owner: Some(alice.clone()),
             public_metadata: None,
             private_metadata: Some(private_meta.clone()),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -2176,13 +2775,11 @@ mod tests {
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
             QueryAnswer::PrivateMetadata {
-                name,
-                description,
-                image,
+                token_uri,
+                extension,
             } => {
-                assert!(name.is_none());
-                assert!(description.is_none());
-                assert!(image.is_none());
+                assert!(token_uri.is_none());
+                assert!(extension.is_none());
             }
             _ => panic!("unexpected"),
         }
@@ -2324,6 +2921,9 @@ mod tests {
             owner: Some(alice.clone()),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -2740,6 +3340,9 @@ mod tests {
             owner: Some(alice.clone()),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -2749,6 +3352,9 @@ mod tests {
             owner: Some(alice.clone()),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -2758,6 +3364,9 @@ mod tests {
             owner: Some(bob.clone()),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -2767,6 +3376,9 @@ mod tests {
             owner: Some(charlie.clone()),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -2776,6 +3388,9 @@ mod tests {
             owner: Some(david.clone()),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -2908,8 +3523,9 @@ mod tests {
         let query_result = query(&deps, query_msg);
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
-            QueryAnswer::TransactionHistory { txs } => {
+            QueryAnswer::TransactionHistory { total, txs } => {
                 assert!(txs.is_empty());
+                assert_eq!(total, 0);
             }
             _ => panic!("unexpected"),
         }
@@ -2918,6 +3534,9 @@ mod tests {
             owner: None,
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -2927,6 +3546,9 @@ mod tests {
             owner: None,
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint 2".to_string()),
             padding: None,
         };
@@ -2947,7 +3569,8 @@ mod tests {
 
         let mint1 = Tx {
             tx_id: 0,
-            blockheight: 12345,
+            block_height: 12345,
+            block_time: 1571797419,
             token_id: "NFT1".to_string(),
             memo: None,
             action: TxAction::Mint {
@@ -2957,7 +3580,8 @@ mod tests {
         };
         let mint2 = Tx {
             tx_id: 1,
-            blockheight: 12345,
+            block_height: 12345,
+            block_time: 1571797419,
             token_id: "NFT2".to_string(),
             memo: Some("Mint 2".to_string()),
             action: TxAction::Mint {
@@ -2967,7 +3591,8 @@ mod tests {
         };
         let xfer1 = Tx {
             tx_id: 2,
-            blockheight: 12345,
+            block_height: 12345,
+            block_time: 1571797419,
             token_id: "NFT1".to_string(),
             memo: None,
             action: TxAction::Transfer {
@@ -2978,7 +3603,8 @@ mod tests {
         };
         let burn2 = Tx {
             tx_id: 3,
-            blockheight: 12345,
+            block_height: 12345,
+            block_time: 1571797419,
             token_id: "NFT2".to_string(),
             memo: None,
             action: TxAction::Burn {
@@ -2997,11 +3623,12 @@ mod tests {
         let query_result = query(&deps, query_msg);
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
-            QueryAnswer::TransactionHistory { txs } => {
+            QueryAnswer::TransactionHistory { total, txs } => {
                 assert_eq!(
                     txs,
                     vec![burn2.clone(), xfer1.clone(), mint2.clone(), mint1.clone()]
                 );
+                assert_eq!(total, 4);
             }
             _ => panic!("unexpected"),
         }
@@ -3016,8 +3643,9 @@ mod tests {
         let query_result = query(&deps, query_msg);
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
-            QueryAnswer::TransactionHistory { txs } => {
+            QueryAnswer::TransactionHistory { total, txs } => {
                 assert_eq!(txs, vec![burn2.clone(), xfer1.clone()]);
+                assert_eq!(total, 4);
             }
             _ => panic!("unexpected"),
         }
@@ -3032,8 +3660,9 @@ mod tests {
         let query_result = query(&deps, query_msg);
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
-            QueryAnswer::TransactionHistory { txs } => {
+            QueryAnswer::TransactionHistory { total, txs } => {
                 assert_eq!(txs, vec![mint2.clone()]);
+                assert_eq!(total, 4);
             }
             _ => panic!("unexpected"),
         }
@@ -3048,8 +3677,9 @@ mod tests {
         let query_result = query(&deps, query_msg);
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
-            QueryAnswer::TransactionHistory { txs } => {
+            QueryAnswer::TransactionHistory { total, txs } => {
                 assert_eq!(txs, vec![xfer1.clone()]);
+                assert_eq!(total, 1);
             }
             _ => panic!("unexpected"),
         }
@@ -3127,6 +3757,713 @@ mod tests {
             } => {
                 assert_eq!(code_hash, Some("Code Hash".to_string()));
                 assert!(also_implements_batch_receive_nft)
+            }
+            _ => panic!("unexpected"),
+        }
+    }
+
+    // test NumTokensOfOwner query
+    #[test]
+    fn test_num_tokens_of_owner() {
+        let (init_result, mut deps) =
+            init_helper_with_config(false, true, false, false, false, false, false);
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let alice = HumanAddr("alice".to_string());
+        let alice_key = "akey".to_string();
+        let bob = HumanAddr("bob".to_string());
+        let bob_key = "bkey".to_string();
+        let charlie = HumanAddr("charlie".to_string());
+        let charlie_key = "ckey".to_string();
+
+        let mints = vec![
+            Mint {
+                token_id: Some("NFT1".to_string()),
+                owner: Some(alice.clone()),
+                public_metadata: None,
+                private_metadata: None,
+                royalty_info: None,
+                serial_number: None,
+                transferable: None,
+                memo: None,
+            },
+            Mint {
+                token_id: Some("NFT2".to_string()),
+                owner: Some(alice.clone()),
+                public_metadata: None,
+                private_metadata: None,
+                royalty_info: None,
+                serial_number: None,
+                transferable: None,
+                memo: None,
+            },
+            Mint {
+                token_id: Some("NFT3".to_string()),
+                owner: Some(alice.clone()),
+                public_metadata: None,
+                private_metadata: None,
+                royalty_info: None,
+                serial_number: None,
+                transferable: None,
+                memo: None,
+            },
+        ];
+
+        let handle_msg = HandleMsg::BatchMintNft {
+            mints: mints.clone(),
+            padding: None,
+        };
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        assert!(handle_result.is_ok());
+
+        // let charlie see the owner of NFT2 until time 55
+        let handle_msg = HandleMsg::SetWhitelistedApproval {
+            address: charlie.clone(),
+            token_id: Some("NFT2".to_string()),
+            view_owner: Some(AccessLevel::ApproveToken),
+            view_private_metadata: None,
+            transfer: None,
+            expires: Some(Expiration::AtTime(55)),
+            padding: None,
+        };
+        let handle_result = handle(
+            &mut deps,
+            Env {
+                block: BlockInfo {
+                    height: 2,
+                    time: 2,
+                    chain_id: "cosmos-testnet-14002".to_string(),
+                },
+                message: MessageInfo {
+                    sender: HumanAddr("alice".to_string()),
+                    sent_funds: vec![],
+                },
+                contract: cosmwasm_std::ContractInfo {
+                    address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+                },
+                contract_key: Some("".to_string()),
+                contract_code_hash: "".to_string(),
+            },
+            handle_msg,
+        );
+        assert!(handle_result.is_ok());
+
+        // test all 3 are public from the config
+        let query_msg = QueryMsg::NumTokensOfOwner {
+            owner: alice.clone(),
+            viewer: None,
+            viewing_key: None,
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::NumTokens { count } => {
+                assert_eq!(count, 3);
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // set ownership to private for alice
+        let handle_msg = HandleMsg::MakeOwnershipPrivate { padding: None };
+        let handle_result = handle(
+            &mut deps,
+            Env {
+                block: BlockInfo {
+                    height: 3,
+                    time: 3,
+                    chain_id: "cosmos-testnet-14002".to_string(),
+                },
+                message: MessageInfo {
+                    sender: HumanAddr("alice".to_string()),
+                    sent_funds: vec![],
+                },
+                contract: cosmwasm_std::ContractInfo {
+                    address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+                },
+                contract_key: Some("".to_string()),
+                contract_code_hash: "".to_string(),
+            },
+            handle_msg,
+        );
+        assert!(handle_result.is_ok());
+
+        // set charlie's viewing key
+        let handle_msg = HandleMsg::SetViewingKey {
+            key: charlie_key.clone(),
+            padding: None,
+        };
+        let handle_result = handle(
+            &mut deps,
+            Env {
+                block: BlockInfo {
+                    height: 3,
+                    time: 3,
+                    chain_id: "cosmos-testnet-14002".to_string(),
+                },
+                message: MessageInfo {
+                    sender: HumanAddr("charlie".to_string()),
+                    sent_funds: vec![],
+                },
+                contract: cosmwasm_std::ContractInfo {
+                    address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+                },
+                contract_key: Some("".to_string()),
+                contract_code_hash: "".to_string(),
+            },
+            handle_msg,
+        );
+        assert!(handle_result.is_ok());
+
+        // test that charlie can only know of NFT2
+        let query_msg = QueryMsg::NumTokensOfOwner {
+            owner: alice.clone(),
+            viewer: Some(charlie.clone()),
+            viewing_key: Some(charlie_key.clone()),
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::NumTokens { count } => {
+                assert_eq!(count, 1);
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // set alice's viewing key
+        let handle_msg = HandleMsg::SetViewingKey {
+            key: alice_key.clone(),
+            padding: None,
+        };
+        let handle_result = handle(
+            &mut deps,
+            Env {
+                block: BlockInfo {
+                    height: 4,
+                    time: 4,
+                    chain_id: "cosmos-testnet-14002".to_string(),
+                },
+                message: MessageInfo {
+                    sender: HumanAddr("alice".to_string()),
+                    sent_funds: vec![],
+                },
+                contract: cosmwasm_std::ContractInfo {
+                    address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+                },
+                contract_key: Some("".to_string()),
+                contract_code_hash: "".to_string(),
+            },
+            handle_msg,
+        );
+        assert!(handle_result.is_ok());
+
+        // test that alice knows of all her tokens
+        let query_msg = QueryMsg::NumTokensOfOwner {
+            owner: alice.clone(),
+            viewer: None,
+            viewing_key: Some(alice_key.clone()),
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::NumTokens { count } => {
+                assert_eq!(count, 3);
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // make ownership public until time 15
+        let handle_msg = HandleMsg::SetGlobalApproval {
+            token_id: None,
+            view_owner: Some(AccessLevel::All),
+            view_private_metadata: None,
+            expires: Some(Expiration::AtTime(15)),
+            padding: None,
+        };
+        let handle_result = handle(
+            &mut deps,
+            Env {
+                block: BlockInfo {
+                    height: 10,
+                    time: 10,
+                    chain_id: "cosmos-testnet-14002".to_string(),
+                },
+                message: MessageInfo {
+                    sender: HumanAddr("alice".to_string()),
+                    sent_funds: vec![],
+                },
+                contract: cosmwasm_std::ContractInfo {
+                    address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+                },
+                contract_key: Some("".to_string()),
+                contract_code_hash: "".to_string(),
+            },
+            handle_msg,
+        );
+        assert!(handle_result.is_ok());
+
+        // set bob's viewing key
+        let handle_msg = HandleMsg::SetViewingKey {
+            key: bob_key.clone(),
+            padding: None,
+        };
+        let handle_result = handle(
+            &mut deps,
+            Env {
+                block: BlockInfo {
+                    height: 10,
+                    time: 10,
+                    chain_id: "cosmos-testnet-14002".to_string(),
+                },
+                message: MessageInfo {
+                    sender: HumanAddr("bob".to_string()),
+                    sent_funds: vec![],
+                },
+                contract: cosmwasm_std::ContractInfo {
+                    address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+                },
+                contract_key: Some("".to_string()),
+                contract_code_hash: "".to_string(),
+            },
+            handle_msg,
+        );
+        assert!(handle_result.is_ok());
+
+        // test that bob can use the global approval to know of all 3
+        let query_msg = QueryMsg::NumTokensOfOwner {
+            owner: alice.clone(),
+            viewer: Some(bob.clone()),
+            viewing_key: Some(bob_key.clone()),
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::NumTokens { count } => {
+                assert_eq!(count, 3);
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // let bob see all alice ownership until time 25
+        let handle_msg = HandleMsg::SetWhitelistedApproval {
+            address: bob.clone(),
+            token_id: None,
+            view_owner: Some(AccessLevel::All),
+            view_private_metadata: None,
+            transfer: None,
+            expires: Some(Expiration::AtTime(25)),
+            padding: None,
+        };
+        let handle_result = handle(
+            &mut deps,
+            Env {
+                block: BlockInfo {
+                    height: 20,
+                    time: 20,
+                    chain_id: "cosmos-testnet-14002".to_string(),
+                },
+                message: MessageInfo {
+                    sender: HumanAddr("alice".to_string()),
+                    sent_funds: vec![],
+                },
+                contract: cosmwasm_std::ContractInfo {
+                    address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+                },
+                contract_key: Some("".to_string()),
+                contract_code_hash: "".to_string(),
+            },
+            handle_msg,
+        );
+        assert!(handle_result.is_ok());
+
+        // test that the global approval has expired
+        let query_msg = QueryMsg::NumTokensOfOwner {
+            owner: alice.clone(),
+            viewer: None,
+            viewing_key: None,
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::NumTokens { count } => {
+                assert_eq!(count, 0);
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // test that bob can use his approval to know of all 3 now that global has expired
+        let query_msg = QueryMsg::NumTokensOfOwner {
+            owner: alice.clone(),
+            viewer: Some(bob.clone()),
+            viewing_key: Some(bob_key.clone()),
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::NumTokens { count } => {
+                assert_eq!(count, 3);
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // make ownership public for NFT2 until time 25
+        let handle_msg = HandleMsg::SetGlobalApproval {
+            token_id: Some("NFT2".to_string()),
+            view_owner: Some(AccessLevel::ApproveToken),
+            view_private_metadata: None,
+            expires: Some(Expiration::AtTime(25)),
+            padding: None,
+        };
+        let handle_result = handle(
+            &mut deps,
+            Env {
+                block: BlockInfo {
+                    height: 22,
+                    time: 22,
+                    chain_id: "cosmos-testnet-14002".to_string(),
+                },
+                message: MessageInfo {
+                    sender: HumanAddr("alice".to_string()),
+                    sent_funds: vec![],
+                },
+                contract: cosmwasm_std::ContractInfo {
+                    address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+                },
+                contract_key: Some("".to_string()),
+                contract_code_hash: "".to_string(),
+            },
+            handle_msg,
+        );
+        assert!(handle_result.is_ok());
+
+        // make ownership public for NFT1 until time 50
+        let handle_msg = HandleMsg::SetGlobalApproval {
+            token_id: Some("NFT1".to_string()),
+            view_owner: Some(AccessLevel::ApproveToken),
+            view_private_metadata: None,
+            expires: Some(Expiration::AtTime(50)),
+            padding: None,
+        };
+        let handle_result = handle(
+            &mut deps,
+            Env {
+                block: BlockInfo {
+                    height: 25,
+                    time: 25,
+                    chain_id: "cosmos-testnet-14002".to_string(),
+                },
+                message: MessageInfo {
+                    sender: HumanAddr("alice".to_string()),
+                    sent_funds: vec![],
+                },
+                contract: cosmwasm_std::ContractInfo {
+                    address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+                },
+                contract_key: Some("".to_string()),
+                contract_code_hash: "".to_string(),
+            },
+            handle_msg,
+        );
+        assert!(handle_result.is_ok());
+
+        // make ownership public for NFT3 until time 60
+        let handle_msg = HandleMsg::SetGlobalApproval {
+            token_id: Some("NFT3".to_string()),
+            view_owner: Some(AccessLevel::ApproveToken),
+            view_private_metadata: None,
+            expires: Some(Expiration::AtTime(60)),
+            padding: None,
+        };
+        let handle_result = handle(
+            &mut deps,
+            Env {
+                block: BlockInfo {
+                    height: 30,
+                    time: 30,
+                    chain_id: "cosmos-testnet-14002".to_string(),
+                },
+                message: MessageInfo {
+                    sender: HumanAddr("alice".to_string()),
+                    sent_funds: vec![],
+                },
+                contract: cosmwasm_std::ContractInfo {
+                    address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+                },
+                contract_key: Some("".to_string()),
+                contract_code_hash: "".to_string(),
+            },
+            handle_msg,
+        );
+        assert!(handle_result.is_ok());
+
+        // test that charlie knows of all of them by using the two global approvals and his own
+        let query_msg = QueryMsg::NumTokensOfOwner {
+            owner: alice.clone(),
+            viewer: Some(charlie.clone()),
+            viewing_key: Some(charlie_key.clone()),
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::NumTokens { count } => {
+                assert_eq!(count, 3);
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // test that bob knows of NFT1 and NFT3 by using the two global approvals
+        let query_msg = QueryMsg::NumTokensOfOwner {
+            owner: alice.clone(),
+            viewer: Some(bob.clone()),
+            viewing_key: Some(bob_key.clone()),
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::NumTokens { count } => {
+                assert_eq!(count, 2);
+            }
+            _ => panic!("unexpected"),
+        }
+
+        // set ownership to private for alice again just to change the saved blockinfo
+        let handle_msg = HandleMsg::MakeOwnershipPrivate { padding: None };
+        let handle_result = handle(
+            &mut deps,
+            Env {
+                block: BlockInfo {
+                    height: 57,
+                    time: 57,
+                    chain_id: "cosmos-testnet-14002".to_string(),
+                },
+                message: MessageInfo {
+                    sender: HumanAddr("alice".to_string()),
+                    sent_funds: vec![],
+                },
+                contract: cosmwasm_std::ContractInfo {
+                    address: HumanAddr::from(MOCK_CONTRACT_ADDR),
+                },
+                contract_key: Some("".to_string()),
+                contract_code_hash: "".to_string(),
+            },
+            handle_msg,
+        );
+        assert!(handle_result.is_ok());
+
+        // test that charlie only knows of NFT3 now that the other two approvals expired
+        let query_msg = QueryMsg::NumTokensOfOwner {
+            owner: alice.clone(),
+            viewer: Some(charlie.clone()),
+            viewing_key: Some(charlie_key.clone()),
+        };
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::NumTokens { count } => {
+                assert_eq!(count, 1);
+            }
+            _ => panic!("unexpected"),
+        }
+    }
+
+    // test BatchNftDossier query
+    #[test]
+    fn test_query_batch_nft_dossier() {
+        let (init_result, mut deps) =
+            init_helper_with_config(false, false, false, false, true, false, true);
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let alice = HumanAddr("alice".to_string());
+
+        let public_meta1 = Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("Name1".to_string()),
+                description: Some("PubDesc1".to_string()),
+                image: Some("PubUri1".to_string()),
+                ..Extension::default()
+            }),
+        };
+        let private_meta1 = Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("PrivName1".to_string()),
+                description: Some("PrivDesc1".to_string()),
+                image: Some("PrivUri1".to_string()),
+                ..Extension::default()
+            }),
+        };
+        let public_meta2 = Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("Name2".to_string()),
+                description: Some("PubDesc2".to_string()),
+                image: Some("PubUri2".to_string()),
+                ..Extension::default()
+            }),
+        };
+        let private_meta2 = Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("PrivName2".to_string()),
+                description: Some("PrivDesc2".to_string()),
+                image: Some("PrivUri2".to_string()),
+                ..Extension::default()
+            }),
+        };
+
+        let public_meta3 = Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("Name3".to_string()),
+                description: Some("PubDesc3".to_string()),
+                image: Some("PubUri3".to_string()),
+                ..Extension::default()
+            }),
+        };
+        let private_meta3 = Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("PrivName3".to_string()),
+                description: Some("PrivDesc3".to_string()),
+                image: Some("PrivUri3".to_string()),
+                ..Extension::default()
+            }),
+        };
+
+        let mints = vec![
+            Mint {
+                token_id: Some("NFT1".to_string()),
+                owner: Some(alice.clone()),
+                public_metadata: Some(public_meta1.clone()),
+                private_metadata: Some(private_meta1.clone()),
+                royalty_info: None,
+                serial_number: None,
+                transferable: None,
+                memo: None,
+            },
+            Mint {
+                token_id: Some("NFT2".to_string()),
+                owner: Some(alice.clone()),
+                public_metadata: Some(public_meta2.clone()),
+                private_metadata: Some(private_meta2.clone()),
+                royalty_info: None,
+                serial_number: None,
+                transferable: None,
+                memo: None,
+            },
+            Mint {
+                token_id: Some("NFT3".to_string()),
+                owner: Some(HumanAddr("bob".to_string())),
+                public_metadata: Some(public_meta3.clone()),
+                private_metadata: Some(private_meta3.clone()),
+                royalty_info: None,
+                serial_number: None,
+                transferable: None,
+                memo: None,
+            },
+        ];
+
+        let handle_msg = HandleMsg::BatchMintNft {
+            mints: mints.clone(),
+            padding: None,
+        };
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        assert!(handle_result.is_ok());
+
+        // test querying all 3
+        let alice_key = "akey".to_string();
+        let handle_msg = HandleMsg::SetViewingKey {
+            key: alice_key.clone(),
+            padding: None,
+        };
+        let handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
+        assert!(handle_result.is_ok());
+
+        let query_msg = QueryMsg::BatchNftDossier {
+            token_ids: vec!["NFT1".to_string(), "NFT2".to_string(), "NFT3".to_string()],
+            viewer: Some(ViewerInfo {
+                address: alice.clone(),
+                viewing_key: alice_key.clone(),
+            }),
+            include_expired: None,
+        };
+        let mint_run_info = MintRunInfo {
+            collection_creator: Some(HumanAddr("instantiator".to_string())),
+            token_creator: Some(HumanAddr("admin".to_string())),
+            time_of_minting: Some(1571797419),
+            mint_run: None,
+            serial_number: None,
+            quantity_minted_this_run: None,
+        };
+        let expected = vec![
+            BatchNftDossierElement {
+                token_id: "NFT1".to_string(),
+                owner: Some(alice.clone()),
+                public_metadata: Some(public_meta1),
+                private_metadata: Some(private_meta1),
+                display_private_metadata_error: None,
+                royalty_info: None,
+                mint_run_info: Some(mint_run_info.clone()),
+                transferable: true,
+                unwrapped: true,
+                owner_is_public: false,
+                public_ownership_expiration: None,
+                private_metadata_is_public: false,
+                private_metadata_is_public_expiration: None,
+                token_approvals: Some(Vec::new()),
+                inventory_approvals: Some(Vec::new()),
+            },
+            BatchNftDossierElement {
+                token_id: "NFT2".to_string(),
+                owner: Some(alice.clone()),
+                public_metadata: Some(public_meta2),
+                private_metadata: Some(private_meta2),
+                display_private_metadata_error: None,
+                royalty_info: None,
+                mint_run_info: Some(mint_run_info.clone()),
+                transferable: true,
+                unwrapped: true,
+                owner_is_public: false,
+                public_ownership_expiration: None,
+                private_metadata_is_public: false,
+                private_metadata_is_public_expiration: None,
+                token_approvals: Some(Vec::new()),
+                inventory_approvals: Some(Vec::new()),
+            },
+            // last one belongs to bob, so you can only see public info
+            BatchNftDossierElement {
+                token_id: "NFT3".to_string(),
+                owner: None,
+                public_metadata: Some(public_meta3),
+                private_metadata: None,
+                display_private_metadata_error: Some(
+                    "You are not authorized to perform this action on token NFT3".to_string(),
+                ),
+                royalty_info: None,
+                mint_run_info: Some(mint_run_info.clone()),
+                transferable: true,
+                unwrapped: true,
+                owner_is_public: false,
+                public_ownership_expiration: None,
+                private_metadata_is_public: false,
+                private_metadata_is_public_expiration: None,
+                token_approvals: None,
+                inventory_approvals: None,
+            },
+        ];
+        let query_result = query(&deps, query_msg);
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::BatchNftDossier { nft_dossiers } => {
+                assert_eq!(nft_dossiers, expected);
             }
             _ => panic!("unexpected"),
         }

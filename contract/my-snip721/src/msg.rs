@@ -1,10 +1,14 @@
+#![allow(clippy::large_enum_variant)]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use cosmwasm_std::{Binary, Coin, HumanAddr};
+use secret_toolkit::permit::Permit;
 
 use crate::expiration::Expiration;
-use crate::token::Metadata;
+use crate::mint_run::{MintRunInfo, SerialNumber};
+use crate::royalties::{DisplayRoyaltyInfo, RoyaltyInfo};
+use crate::token::{Extension, Metadata};
 
 /// Instantiation message
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -17,6 +21,9 @@ pub struct InitMsg {
     pub admin: Option<HumanAddr>,
     /// entropy used for prng seed
     pub entropy: String,
+    /// optional royalty information to use as default when RoyaltyInfo is not provided to a
+    /// minting function
+    pub royalty_info: Option<RoyaltyInfo>,
     /// optional privacy configuration for the contract
     pub config: Option<InitConfig>,
     /// optional callback message to execute after instantiation.  This will
@@ -105,6 +112,13 @@ pub enum HandleMsg {
         public_metadata: Option<Metadata>,
         /// optional private metadata that can only be seen by the owner and whitelist
         private_metadata: Option<Metadata>,
+        /// optional serial number for this token
+        serial_number: Option<SerialNumber>,
+        /// optional royalty information for this token.  This will be ignored if the token is
+        /// non-transferable
+        royalty_info: Option<RoyaltyInfo>,
+        /// optionally true if the token is transferable.  Defaults to true if omitted
+        transferable: Option<bool>,
         /// optional memo for the tx
         memo: Option<String>,
         /// optional message length padding
@@ -117,23 +131,57 @@ pub enum HandleMsg {
         /// optional message length padding
         padding: Option<String>,
     },
-    /// set the public metadata.  This can be called by either the token owner or a valid minter
-    /// if they have been given this power by the appropriate config values
-    SetPublicMetadata {
-        /// id of the token whose public metadata should be updated
-        token_id: String,
-        /// the new public metadata
-        metadata: Metadata,
+    /// create a mint run of clones that will have MintRunInfos showing they are serialized
+    /// copies in the same mint run with the specified quantity.  Mint_run_id can be used to
+    /// track mint run numbers in subsequent MintNftClones calls.  So, if provided, the first
+    /// MintNftClones call will have mint run number 1, the next time MintNftClones is called
+    /// with the same mint_run_id, those clones will have mint run number 2, etc...  If no
+    /// mint_run_id is specified, the clones will not have any mint run number assigned to their
+    /// MintRunInfos.  Because this mints to a single address, there is no option to specify
+    /// that the clones are non-transferable as there is no foreseen reason for someone to have
+    /// multiple copies of an nft that they can never send to others
+    MintNftClones {
+        /// optional mint run ID
+        mint_run_id: Option<String>,
+        /// number of clones to mint
+        quantity: u32,
+        /// optional owner address. if omitted, owned by the message sender
+        owner: Option<HumanAddr>,
+        /// optional public metadata that can be seen by everyone
+        public_metadata: Option<Metadata>,
+        /// optional private metadata that can only be seen by the owner and whitelist
+        private_metadata: Option<Metadata>,
+        /// optional royalty information for these tokens
+        royalty_info: Option<RoyaltyInfo>,
+        /// optional memo for the mint txs
+        memo: Option<String>,
         /// optional message length padding
         padding: Option<String>,
     },
-    /// set the private metadata.  This can be called by either the token owner or a valid minter
-    /// if they have been given this power by the appropriate config values
-    SetPrivateMetadata {
-        /// id of the token whose private metadata should be updated
+    /// set the public and/or private metadata.  This can be called by either the token owner or
+    /// a valid minter if they have been given this power by the appropriate config values
+    SetMetadata {
+        /// id of the token whose metadata should be updated
         token_id: String,
-        /// the new private metadata
-        metadata: Metadata,
+        /// the optional new public metadata
+        public_metadata: Option<Metadata>,
+        /// the optional new private metadata
+        private_metadata: Option<Metadata>,
+        /// optional message length padding
+        padding: Option<String>,
+    },
+    /// set royalty information.  If no token ID is provided, this royalty info will become the default
+    /// RoyaltyInfo for any new tokens minted on the contract.  If a token ID is provided, this can only
+    /// be called by the token creator and only when the creator is the current owner.  Royalties can not
+    /// be set on a token that is not transferable, because they can never be sold
+    SetRoyaltyInfo {
+        /// optional id of the token whose royalty information should be updated.  If not provided,
+        /// this updates the default royalty information for any new tokens minted on the contract
+        token_id: Option<String>,
+        /// the new royalty information.  If None, existing royalty information will be deleted.  It should
+        /// be noted, that if deleting a token's royalty information while the contract has a default royalty
+        /// info set up will give the token the default royalty information
+        royalty_info: Option<RoyaltyInfo>,
         /// optional message length padding
         padding: Option<String>,
     },
@@ -225,7 +273,7 @@ pub enum HandleMsg {
         /// optional message length padding
         padding: Option<String>,
     },
-    /// transfer a token
+    /// transfer a token if it is transferable
     TransferNft {
         /// recipient of the transfer
         recipient: HumanAddr,
@@ -236,17 +284,19 @@ pub enum HandleMsg {
         /// optional message length padding
         padding: Option<String>,
     },
-    /// transfer many tokens
+    /// transfer many tokens and fails if any are non-transferable
     BatchTransferNft {
         /// list of transfers to perform
         transfers: Vec<Transfer>,
         /// optional message length padding
         padding: Option<String>,
     },
-    /// send a token and call receiving contract's (Batch)ReceiveNft
+    /// send a token if it is transferable and call the receiving contract's (Batch)ReceiveNft
     SendNft {
         /// address to send the token to
         contract: HumanAddr,
+        /// optional code hash and BatchReceiveNft implementation status of the recipient contract
+        receiver_info: Option<ReceiverInfo>,
         /// id of the token to send
         token_id: String,
         /// optional message to send with the (Batch)RecieveNft callback
@@ -256,14 +306,17 @@ pub enum HandleMsg {
         /// optional message length padding
         padding: Option<String>,
     },
-    /// send many tokens and call receiving contracts' (Batch)ReceiveNft
+    /// send many tokens and call the receiving contracts' (Batch)ReceiveNft.  Fails if any tokens are
+    /// non-transferable
     BatchSendNft {
         /// list of sends to perform
         sends: Vec<Send>,
         /// optional message length padding
         padding: Option<String>,
     },
-    /// burn a token
+    /// burn a token.  This can be always be done on a non-transferable token, regardless of whether burn
+    /// has been enabled on the contract.  An owner should always have a way to get rid of a token they do
+    /// not want, and burning is the only way to do that if the token is non-transferable
     BurnNft {
         /// token to burn
         token_id: String,
@@ -272,7 +325,9 @@ pub enum HandleMsg {
         /// optional message length padding
         padding: Option<String>,
     },
-    /// burn many tokens
+    /// burn many tokens.  This can be always be done on a non-transferable token, regardless of whether burn
+    /// has been enabled on the contract.  An owner should always have a way to get rid of a token they do
+    /// not want, and burning is the only way to do that if the token is non-transferable
     BatchBurnNft {
         /// list of burns to perform
         burns: Vec<Burn>,
@@ -342,6 +397,13 @@ pub enum HandleMsg {
         /// optional message length padding
         padding: Option<String>,
     },
+    /// disallow the use of a permit
+    RevokePermit {
+        /// name of the permit that is no longer valid
+        permit_name: String,
+        /// optional message length padding
+        padding: Option<String>,
+    },
 }
 
 /// permission access level
@@ -369,6 +431,13 @@ pub struct Mint {
     pub public_metadata: Option<Metadata>,
     /// optional private metadata that can only be seen by owner and whitelist
     pub private_metadata: Option<Metadata>,
+    /// optional serial number for this token
+    pub serial_number: Option<SerialNumber>,
+    /// optional royalty information for this token.  This will be ignored if the token is
+    /// non-transferable
+    pub royalty_info: Option<RoyaltyInfo>,
+    /// optionally true if the token is transferable.  Defaults to true if omitted
+    pub transferable: Option<bool>,
     /// optional memo for the tx
     pub memo: Option<String>,
 }
@@ -398,6 +467,8 @@ pub struct Transfer {
 pub struct Send {
     /// recipient of the sent tokens
     pub contract: HumanAddr,
+    /// optional code hash and BatchReceiveNft implementation status of the recipient contract
+    pub receiver_info: Option<ReceiverInfo>,
     /// tokens being sent
     pub token_ids: Vec<String>,
     /// optional message to send with the (Batch)RecieveNft callback
@@ -419,10 +490,20 @@ pub enum HandleAnswer {
     BatchMintNft {
         token_ids: Vec<String>,
     },
-    SetPublicMetadata {
+    /// Displays the token ids of the first minted NFT and the last minted NFT.  Because these
+    /// are serialized clones, the ids of all the tokens minted in between should be easily
+    /// inferred.  MintNftClones will also display the minted tokens' IDs in the log attributes
+    /// under the keys `first_minted` and `last_minted` in case minting was done as a callback message
+    MintNftClones {
+        /// token id of the first minted clone
+        first_minted: String,
+        /// token id of the last minted clone
+        last_minted: String,
+    },
+    SetMetadata {
         status: ResponseStatus,
     },
-    SetPrivateMetadata {
+    SetRoyaltyInfo {
         status: ResponseStatus,
     },
     MakeOwnershipPrivate {
@@ -489,6 +570,9 @@ pub enum HandleAnswer {
     SetContractStatus {
         status: ResponseStatus,
     },
+    RevokePermit {
+        status: ResponseStatus,
+    },
 }
 
 /// the address and viewing key making an authenticated query request
@@ -498,6 +582,16 @@ pub struct ViewerInfo {
     pub address: HumanAddr,
     /// authentication key string
     pub viewing_key: String,
+}
+
+/// a recipient contract's code hash and whether it implements BatchReceiveNft
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct ReceiverInfo {
+    /// recipient's code hash
+    pub recipient_code_hash: String,
+    /// true if the contract also implements BacthReceiveNft.  Defaults to false
+    /// if not specified
+    pub also_implements_batch_receive_nft: Option<bool>,
 }
 
 /// tx type and specifics
@@ -536,7 +630,9 @@ pub struct Tx {
     /// tx id
     pub tx_id: u64,
     /// the block containing this tx
-    pub blockheight: u64,
+    pub block_height: u64,
+    /// the time (in seconds since 01/01/1970) of the block containing this tx
+    pub block_time: u64,
     /// token id
     pub token_id: String,
     /// tx type and specifics
@@ -566,8 +662,7 @@ pub enum QueryMsg {
     AllTokens {
         /// optional address and key requesting to view the list of tokens
         viewer: Option<ViewerInfo>,
-        /// optionally display only token ids that come after the input String in
-        /// lexicographical order
+        /// paginate by providing the last token_id received in the previous query
         start_after: Option<String>,
         /// optional number of token ids to display
         limit: Option<u32>,
@@ -602,10 +697,23 @@ pub enum QueryMsg {
         viewer: Option<ViewerInfo>,
     },
     /// displays all the information about a token that the viewer has permission to
-    /// see.  This may include the owner, the public metadata, the private metadata, and
-    /// the token and inventory approvals
+    /// see.  This may include the owner, the public metadata, the private metadata, royalty
+    /// information, mint run information, whether the token is unwrapped, whether the token is
+    /// transferable, and the token and inventory approvals
     NftDossier {
         token_id: String,
+        /// optional address and key requesting to view the token information
+        viewer: Option<ViewerInfo>,
+        /// optionally include expired Approvals in the response list.  If ommitted or
+        /// false, expired Approvals will be filtered out of the response
+        include_expired: Option<bool>,
+    },
+    /// displays all the information about multiple tokens that the viewer has permission to
+    /// see.  This may include the owner, the public metadata, the private metadata, royalty
+    /// information, mint run information, whether the token is unwrapped, whether the token is
+    /// transferable, and the token and inventory approvals
+    BatchNftDossier {
+        token_ids: Vec<String>,
         /// optional address and key requesting to view the token information
         viewer: Option<ViewerInfo>,
         /// optionally include expired Approvals in the response list.  If ommitted or
@@ -654,15 +762,30 @@ pub enum QueryMsg {
         viewer: Option<HumanAddr>,
         /// optional viewing key
         viewing_key: Option<String>,
-        /// optionally display only token ids that come after the input String in
-        /// lexicographical order
+        /// paginate by providing the last token_id received in the previous query
         start_after: Option<String>,
         /// optional number of token ids to display
         limit: Option<u32>,
     },
+    /// displays the number of tokens that the querier has permission to see the owner and that
+    /// belong to the specified address
+    NumTokensOfOwner {
+        owner: HumanAddr,
+        /// optional address of the querier if different from the owner
+        viewer: Option<HumanAddr>,
+        /// optional viewing key
+        viewing_key: Option<String>,
+    },
     /// display if a token is unwrapped
     IsUnwrapped { token_id: String },
-    /// verify that the specified address has approval to transfer every listed token
+    /// display if a token is transferable
+    IsTransferable { token_id: String },
+    /// display that this contract implements non-transferable tokens
+    ImplementsNonTransferableTokens {},
+    /// display that this contract implements the use of the `token_subtype` metadata extension field
+    ImplementsTokenSubtype {},
+    /// verify that the specified address has approval to transfer every listed token.  
+    /// A token will count as unapproved if it is non-transferable
     VerifyTransferApproval {
         /// list of tokens to verify approval for
         token_ids: Vec<String>,
@@ -687,6 +810,24 @@ pub enum QueryMsg {
     RegisteredCodeHash {
         /// the contract whose receive registration info you want to view
         contract: HumanAddr,
+    },
+    /// display the royalty information of a token if a token ID is specified, or display the
+    /// contract's default royalty information in no token ID is provided
+    RoyaltyInfo {
+        /// optional ID of the token whose royalty information should be displayed.  If not
+        /// provided, display the contract's default royalty information
+        token_id: Option<String>,
+        /// optional address and key requesting to view the royalty information
+        viewer: Option<ViewerInfo>,
+    },
+    /// display the contract's creator
+    ContractCreator {},
+    /// perform queries by passing permits instead of viewing keys
+    WithPermit {
+        /// permit used to verify querier identity
+        permit: Permit,
+        /// query to perform
+        query: QueryWithPermit,
     },
 }
 
@@ -719,6 +860,28 @@ pub struct Cw721OwnerOfResponse {
     pub owner: Option<HumanAddr>,
     /// list of addresses approved to transfer this token
     pub approvals: Vec<Cw721Approval>,
+}
+
+/// the token id and nft dossier info of a single token response in a batch query
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct BatchNftDossierElement {
+    pub token_id: String,
+    pub owner: Option<HumanAddr>,
+    pub public_metadata: Option<Metadata>,
+    pub private_metadata: Option<Metadata>,
+    pub display_private_metadata_error: Option<String>,
+    pub royalty_info: Option<DisplayRoyaltyInfo>,
+    pub mint_run_info: Option<MintRunInfo>,
+    /// true if this token is transferable
+    pub transferable: bool,
+    /// true if this token is unwrapped (returns true if the contract does not have selaed metadata enabled)
+    pub unwrapped: bool,
+    pub owner_is_public: bool,
+    pub public_ownership_expiration: Option<Expiration>,
+    pub private_metadata_is_public: bool,
+    pub private_metadata_is_public_expiration: Option<Expiration>,
+    pub token_approvals: Option<Vec<Snip721Approval>>,
+    pub inventory_approvals: Option<Vec<Snip721Approval>>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
@@ -765,14 +928,12 @@ pub enum QueryAnswer {
         inventory_approvals: Vec<Snip721Approval>,
     },
     NftInfo {
-        name: Option<String>,
-        description: Option<String>,
-        image: Option<String>,
+        token_uri: Option<String>,
+        extension: Option<Extension>,
     },
     PrivateMetadata {
-        name: Option<String>,
-        description: Option<String>,
-        image: Option<String>,
+        token_uri: Option<String>,
+        extension: Option<Extension>,
     },
     AllNftInfo {
         access: Cw721OwnerOfResponse,
@@ -783,6 +944,10 @@ pub enum QueryAnswer {
         public_metadata: Option<Metadata>,
         private_metadata: Option<Metadata>,
         display_private_metadata_error: Option<String>,
+        royalty_info: Option<DisplayRoyaltyInfo>,
+        mint_run_info: Option<MintRunInfo>,
+        transferable: bool,
+        unwrapped: bool,
         owner_is_public: bool,
         public_ownership_expiration: Option<Expiration>,
         private_metadata_is_public: bool,
@@ -790,22 +955,42 @@ pub enum QueryAnswer {
         token_approvals: Option<Vec<Snip721Approval>>,
         inventory_approvals: Option<Vec<Snip721Approval>>,
     },
+    BatchNftDossier {
+        nft_dossiers: Vec<BatchNftDossierElement>,
+    },
     ApprovedForAll {
         operators: Vec<Cw721Approval>,
     },
     IsUnwrapped {
         token_is_unwrapped: bool,
     },
+    IsTransferable {
+        token_is_transferable: bool,
+    },
+    ImplementsNonTransferableTokens {
+        is_enabled: bool,
+    },
+    ImplementsTokenSubtype {
+        is_enabled: bool,
+    },
     VerifyTransferApproval {
         approved_for_all: bool,
         first_unapproved_token: Option<String>,
     },
     TransactionHistory {
+        /// total transaction count
+        total: u64,
         txs: Vec<Tx>,
     },
     RegisteredCodeHash {
         code_hash: Option<String>,
         also_implements_batch_receive_nft: bool,
+    },
+    RoyaltyInfo {
+        royalty_info: Option<DisplayRoyaltyInfo>,
+    },
+    ContractCreator {
+        creator: Option<HumanAddr>,
     },
 }
 
@@ -833,4 +1018,115 @@ impl ContractStatus {
             ContractStatus::StopAll => 2,
         }
     }
+}
+
+/// queries using permits instead of viewing keys
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryWithPermit {
+    /// display the royalty information of a token if a token ID is specified, or display the
+    /// contract's default royalty information in no token ID is provided
+    RoyaltyInfo {
+        /// optional ID of the token whose royalty information should be displayed.  If not
+        /// provided, display the contract's default royalty information
+        token_id: Option<String>,
+    },
+    /// displays the private metadata if permitted to view it
+    PrivateMetadata { token_id: String },
+    /// displays all the information about a token that the viewer has permission to
+    /// see.  This may include the owner, the public metadata, the private metadata, royalty
+    /// information, mint run information, whether the token is unwrapped, whether the token is
+    /// transferable, and the token and inventory approvals
+    NftDossier {
+        token_id: String,
+        /// optionally include expired Approvals in the response list.  If ommitted or
+        /// false, expired Approvals will be filtered out of the response
+        include_expired: Option<bool>,
+    },
+    /// displays all the information about multiple tokens that the viewer has permission to
+    /// see.  This may include the owner, the public metadata, the private metadata, royalty
+    /// information, mint run information, whether the token is unwrapped, whether the token is
+    /// transferable, and the token and inventory approvals
+    BatchNftDossier {
+        token_ids: Vec<String>,
+        /// optionally include expired Approvals in the response list.  If ommitted or
+        /// false, expired Approvals will be filtered out of the response
+        include_expired: Option<bool>,
+    },
+    /// display the owner of the specified token if authorized to view it.  If the requester
+    /// is also the token's owner, the response will also include a list of any addresses
+    /// that can transfer this token.  The transfer approval list is for CW721 compliance,
+    /// but the NftDossier query will be more complete by showing viewing approvals as well
+    OwnerOf {
+        token_id: String,
+        /// optionally include expired Approvals in the response list.  If ommitted or
+        /// false, expired Approvals will be filtered out of the response
+        include_expired: Option<bool>,
+    },
+    /// displays all the information contained in the OwnerOf and NftInfo queries
+    AllNftInfo {
+        token_id: String,
+        /// optionally include expired Approvals in the response list.  If ommitted or
+        /// false, expired Approvals will be filtered out of the response
+        include_expired: Option<bool>,
+    },
+    /// list all the inventory-wide approvals in place for the permit creator
+    InventoryApprovals {
+        /// optionally include expired Approvals in the response list.  If ommitted or
+        /// false, expired Approvals will be filtered out of the response
+        include_expired: Option<bool>,
+    },
+    /// verify that the permit creator has approval to transfer every listed token.  
+    /// A token will count as unapproved if it is non-transferable
+    VerifyTransferApproval {
+        /// list of tokens to verify approval for
+        token_ids: Vec<String>,
+    },
+    /// display the transaction history for the permit creator in reverse
+    /// chronological order
+    TransactionHistory {
+        /// optional page to display
+        page: Option<u32>,
+        /// optional number of transactions per page
+        page_size: Option<u32>,
+    },
+    /// display the number of tokens controlled by the contract.  The token supply must
+    /// either be public, or the querier must be an authenticated minter
+    NumTokens {},
+    /// display an optionally paginated list of all the tokens controlled by the contract.
+    /// The token supply must either be public, or the querier must be an authenticated
+    /// minter
+    AllTokens {
+        /// paginate by providing the last token_id received in the previous query
+        start_after: Option<String>,
+        /// optional number of token ids to display
+        limit: Option<u32>,
+    },
+    /// list all the approvals in place for a specified token if given the owner's permit
+    TokenApprovals {
+        token_id: String,
+        /// optionally include expired Approvals in the response list.  If ommitted or
+        /// false, expired Approvals will be filtered out of the response
+        include_expired: Option<bool>,
+    },
+    /// displays a list of all the CW721-style operators (any address that was granted
+    /// approval to transfer all of the owner's tokens).  This query is provided to maintain
+    /// CW721 compliance
+    ApprovedForAll {
+        /// optionally include expired Approvals in the response list.  If ommitted or
+        /// false, expired Approvals will be filtered out of the response
+        include_expired: Option<bool>,
+    },
+    /// displays a list of all the tokens belonging to the input owner in which the permit
+    /// creator has view_owner permission
+    Tokens {
+        owner: HumanAddr,
+        /// paginate by providing the last token_id received in the previous query
+        start_after: Option<String>,
+        /// optional number of token ids to display
+        limit: Option<u32>,
+    },
+    /// displays the number of tokens that the querier has permission to see the owner and that
+    /// belong to the specified address
+    NumTokensOfOwner { owner: HumanAddr },
 }

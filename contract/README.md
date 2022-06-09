@@ -1,0 +1,1 @@
+cd mysnip-721 && make compile

@@ -2,18 +2,19 @@
 mod tests {
     use crate::contract::{check_permission, handle, init, query};
     use crate::expiration::Expiration;
+    use crate::inventory::Inventory;
     use crate::msg::{
         AccessLevel, Burn, ContractStatus, HandleAnswer, HandleMsg, InitConfig, InitMsg, Mint,
-        PostInitCallback, QueryAnswer, QueryMsg, Send, Transfer, Tx, TxAction,
+        PostInitCallback, QueryAnswer, QueryMsg, ReceiverInfo, Send, Transfer, Tx, TxAction,
     };
     use crate::receiver::Snip721ReceiveMsg;
     use crate::state::{
         get_txs, json_load, json_may_load, load, may_load, AuthList, Config, Permission,
         PermissionType, CONFIG_KEY, MINTERS_KEY, PREFIX_ALL_PERMISSIONS, PREFIX_AUTHLIST,
-        PREFIX_INFOS, PREFIX_MAP_TO_ID, PREFIX_MAP_TO_INDEX, PREFIX_OWNED, PREFIX_OWNER_PRIV,
-        PREFIX_PRIV_META, PREFIX_PUB_META, PREFIX_RECEIVERS, PREFIX_TOKENS, PREFIX_VIEW_KEY,
+        PREFIX_INFOS, PREFIX_MAP_TO_ID, PREFIX_MAP_TO_INDEX, PREFIX_OWNER_PRIV, PREFIX_PRIV_META,
+        PREFIX_PUB_META, PREFIX_RECEIVERS, PREFIX_VIEW_KEY,
     };
-    use crate::token::{Metadata, Token};
+    use crate::token::{Extension, Metadata, Token};
     use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
     use cosmwasm_std::testing::*;
     use cosmwasm_std::{
@@ -24,7 +25,6 @@ mod tests {
     use cosmwasm_storage::ReadonlyPrefixedStorage;
     use secret_toolkit::utils::space_pad;
     use std::any::Any;
-    use std::collections::HashSet;
 
     // Helper functions
 
@@ -40,6 +40,7 @@ mod tests {
             symbol: "S721".to_string(),
             admin: Some(HumanAddr("admin".to_string())),
             entropy: "We're going to need a bigger boat".to_string(),
+            royalty_info: None,
             config: None,
             post_init_callback: None,
         };
@@ -77,7 +78,7 @@ mod tests {
                 unwrapped_metadata_is_private,
                 minter_may_update_metadata,
                 owner_may_update_metadata,
-                enable_burn
+                enable_burn,
             )
             .as_bytes(),
         ))
@@ -87,6 +88,7 @@ mod tests {
             symbol: "S721".to_string(),
             admin: Some(HumanAddr("admin".to_string())),
             entropy: "We're going to need a bigger boat".to_string(),
+            royalty_info: None,
             config: Some(init_config),
             post_init_callback: None,
         };
@@ -99,7 +101,7 @@ mod tests {
             Ok(_response) => panic!("Expected error, but had Ok response"),
             Err(err) => match err {
                 StdError::GenericErr { msg, .. } => msg,
-                _ => panic!(format!("Unexpected error result {:?}", err)),
+                _ => panic!("Unexpected error result {:?}", err),
             },
         }
     }
@@ -183,6 +185,7 @@ mod tests {
             symbol: "S721".to_string(),
             admin: Some(HumanAddr("admin".to_string())),
             entropy: "We're going to need a bigger boat".to_string(),
+            royalty_info: None,
             config: None,
             post_init_callback,
         };
@@ -216,14 +219,22 @@ mod tests {
         let admin = HumanAddr("admin".to_string());
         let admin_raw = deps.api.canonical_address(&admin).unwrap();
         let pub1 = Metadata {
-            name: Some("NFT1".to_string()),
-            description: Some("pub1".to_string()),
-            image: Some("uri1".to_string()),
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("NFT1".to_string()),
+                description: Some("pub1".to_string()),
+                image: Some("uri1".to_string()),
+                ..Extension::default()
+            }),
         };
         let priv2 = Metadata {
-            name: Some("NFT2".to_string()),
-            description: Some("priv2".to_string()),
-            image: Some("uri2".to_string()),
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("NFT2".to_string()),
+                description: Some("priv2".to_string()),
+                image: Some("uri2".to_string()),
+                ..Extension::default()
+            }),
         };
         let mints = vec![
             Mint {
@@ -231,6 +242,9 @@ mod tests {
                 owner: Some(alice.clone()),
                 public_metadata: Some(pub1.clone()),
                 private_metadata: None,
+                royalty_info: None,
+                serial_number: None,
+                transferable: None,
                 memo: None,
             },
             Mint {
@@ -238,6 +252,9 @@ mod tests {
                 owner: None,
                 public_metadata: None,
                 private_metadata: Some(priv2.clone()),
+                royalty_info: None,
+                serial_number: None,
+                transferable: None,
                 memo: None,
             },
             Mint {
@@ -245,6 +262,9 @@ mod tests {
                 owner: Some(alice.clone()),
                 public_metadata: None,
                 private_metadata: None,
+                royalty_info: None,
+                transferable: None,
+                serial_number: None,
                 memo: None,
             },
             Mint {
@@ -252,6 +272,9 @@ mod tests {
                 owner: Some(admin.clone()),
                 public_metadata: None,
                 private_metadata: None,
+                royalty_info: None,
+                transferable: None,
+                serial_number: None,
                 memo: Some("has id 3".to_string()),
             },
         ];
@@ -308,13 +331,6 @@ mod tests {
         }
 
         // verify the tokens are in the id and index maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert_eq!(tokens.len(), 4);
-        assert!(tokens.contains("0"));
-        assert!(tokens.contains("NFT2"));
-        assert!(tokens.contains("NFT3"));
-        assert!(tokens.contains("3"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index1: u32 = load(&map2idx, "0".as_bytes()).unwrap();
         let token_key1 = index1.to_le_bytes();
@@ -355,17 +371,13 @@ mod tests {
         let priv_meta2: Metadata = load(&priv_store, &token_key2).unwrap();
         assert_eq!(priv_meta2, priv2);
         // verify owner lists
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let owned: HashSet<u32> = load(&owned_store, alice_raw.as_slice()).unwrap();
-        assert!(owned.contains(&0));
-        assert!(owned.contains(&2));
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let owned: HashSet<u32> = load(&owned_store, admin_raw.as_slice()).unwrap();
-        assert!(owned.contains(&1));
-        assert!(owned.contains(&3));
+        assert!(Inventory::owns(&deps.storage, &alice_raw, 0).unwrap());
+        assert!(Inventory::owns(&deps.storage, &alice_raw, 2).unwrap());
+        assert!(Inventory::owns(&deps.storage, &admin_raw, 1).unwrap());
+        assert!(Inventory::owns(&deps.storage, &admin_raw, 3).unwrap());
         // verify mint tx was logged
-        let txs = get_txs(&deps.api, &deps.storage, &admin_raw, 0, 4).unwrap();
-        assert_eq!(txs.len(), 4);
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &admin_raw, 0, 4).unwrap();
+        assert_eq!(total, 4);
         assert_eq!(txs[0].token_id, "3".to_string());
         assert_eq!(
             txs[0].action,
@@ -405,11 +417,18 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: None,
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -423,16 +442,47 @@ mod tests {
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
+        // test setting both token_uri and extension
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("MyNFT".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: Some(Metadata {
+                token_uri: Some("uri".to_string()),
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
+            private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
+            memo: None,
+            padding: None,
+        };
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let error = extract_error_msg(handle_result);
+        assert!(error.contains("Metadata can not have BOTH token_uri AND extension"));
+
         // test non-minter attempt
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: None,
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -447,19 +497,32 @@ mod tests {
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("MyNFT".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
+        let pub_expect = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT".to_string()),
                 description: None,
                 image: Some("uri".to_string()),
+                ..Extension::default()
             }),
-            private_metadata: Some(Metadata {
+        });
+        let priv_expect = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFTpriv".to_string()),
                 description: Some("Nifty".to_string()),
                 image: Some("privuri".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("MyNFT".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: pub_expect.clone(),
+            private_metadata: priv_expect.clone(),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -467,9 +530,6 @@ mod tests {
         let minted = extract_log(handle_result);
         assert!(minted.contains("MyNFT"));
         // verify the token is in the id and index maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("MyNFT"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "MyNFT".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -493,20 +553,15 @@ mod tests {
         // verify the token metadata
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &token_key).unwrap();
-        assert_eq!(pub_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(pub_meta.description, None);
-        assert_eq!(pub_meta.image, Some("uri".to_string()));
+        assert_eq!(pub_meta, pub_expect.unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &token_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFTpriv".to_string()));
-        assert_eq!(priv_meta.description, Some("Nifty".to_string()));
-        assert_eq!(priv_meta.image, Some("privuri".to_string()));
+        assert_eq!(priv_meta, priv_expect.unwrap());
         // verify token is in owner list
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let owned: HashSet<u32> = load(&owned_store, alice_raw.as_slice()).unwrap();
-        assert!(owned.contains(&0));
+        assert!(Inventory::owns(&deps.storage, &alice_raw, 0).unwrap());
         // verify mint tx was logged to both parties
-        let txs = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        assert_eq!(total, 1);
         assert_eq!(txs.len(), 1);
         assert_eq!(txs[0].token_id, "MyNFT".to_string());
         assert_eq!(
@@ -517,22 +572,34 @@ mod tests {
             }
         );
         assert_eq!(txs[0].memo, Some("Mint it baby!".to_string()));
-        let tx2 = get_txs(&deps.api, &deps.storage, &admin_raw, 0, 1).unwrap();
+        let (tx2, total) = get_txs(&deps.api, &deps.storage, &admin_raw, 0, 1).unwrap();
+        assert_eq!(total, 1);
         assert_eq!(txs, tx2);
         // test minting with an existing token id
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: None,
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: Some(Metadata {
-                name: Some("MyNFTpriv".to_string()),
-                description: Some("Nifty".to_string()),
-                image: Some("privuri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFTpriv".to_string()),
+                    description: Some("Nifty".to_string()),
+                    image: Some("privuri".to_string()),
+                    ..Extension::default()
+                }),
             }),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -541,15 +608,23 @@ mod tests {
         assert!(error.contains("Token ID MyNFT is already in use"));
 
         // test minting without specifying recipient or id
-        let handle_msg = HandleMsg::MintNft {
-            token_id: None,
-            owner: None,
-            public_metadata: Some(Metadata {
+        let pub_expect = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("AdminNFT".to_string()),
                 description: None,
                 image: None,
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: None,
+            owner: None,
+            public_metadata: pub_expect.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Admin wants his own".to_string()),
             padding: None,
         };
@@ -565,9 +640,6 @@ mod tests {
         }
 
         // verify token is in the token list
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("1"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "1".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -587,18 +659,15 @@ mod tests {
         // verify metadata
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &token_key).unwrap();
-        assert_eq!(pub_meta.name, Some("AdminNFT".to_string()));
-        assert_eq!(pub_meta.description, None);
-        assert_eq!(pub_meta.image, None);
+        assert_eq!(pub_meta, pub_expect.unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &token_key).unwrap();
         assert!(priv_meta.is_none());
         // verify token is in the owner list
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let owned: HashSet<u32> = load(&owned_store, admin_raw.as_slice()).unwrap();
-        assert!(owned.contains(&1));
+        assert!(Inventory::owns(&deps.storage, &admin_raw, 1).unwrap());
         // verify mint tx was logged
-        let txs = get_txs(&deps.api, &deps.storage, &admin_raw, 0, 10).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &admin_raw, 0, 10).unwrap();
+        assert_eq!(total, 2);
         assert_eq!(txs.len(), 2);
         assert_eq!(txs[0].token_id, "1".to_string());
         assert_eq!(
@@ -632,13 +701,18 @@ mod tests {
         );
 
         // test token does not exist when supply is public
-        let handle_msg = HandleMsg::SetPublicMetadata {
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "SNIP20".to_string(),
-            metadata: Metadata {
-                name: Some("New Name".to_string()),
-                description: Some("I changed the metadata".to_string()),
-                image: Some("new uri".to_string()),
-            },
+            public_metadata: Some(Metadata {
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("New Name".to_string()),
+                    description: Some("I changed the metadata".to_string()),
+                    image: Some("new uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
+            private_metadata: None,
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
@@ -653,13 +727,18 @@ mod tests {
         );
 
         // test token does not exist when supply is private
-        let handle_msg = HandleMsg::SetPublicMetadata {
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "SNIP20".to_string(),
-            metadata: Metadata {
-                name: Some("New Name".to_string()),
-                description: Some("I changed the metadata".to_string()),
-                image: Some("new uri".to_string()),
-            },
+            public_metadata: Some(Metadata {
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("New Name".to_string()),
+                    description: Some("I changed the metadata".to_string()),
+                    image: Some("new uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
+            private_metadata: None,
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
@@ -673,13 +752,18 @@ mod tests {
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
-        let handle_msg = HandleMsg::SetPublicMetadata {
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "MyNFT".to_string(),
-            metadata: Metadata {
-                name: Some("MyNFT".to_string()),
-                description: None,
-                image: Some("uri".to_string()),
-            },
+            public_metadata: Some(Metadata {
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
+            private_metadata: None,
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
@@ -695,24 +779,36 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: None,
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
         // test not minter nor owner
-        let handle_msg = HandleMsg::SetPublicMetadata {
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "MyNFT".to_string(),
-            metadata: Metadata {
-                name: Some("New Name".to_string()),
-                description: Some("I changed the metadata".to_string()),
-                image: Some("new uri".to_string()),
-            },
+            public_metadata: Some(Metadata {
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("New Name".to_string()),
+                    description: Some("I changed the metadata".to_string()),
+                    image: Some("new uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
+            private_metadata: None,
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
@@ -720,13 +816,18 @@ mod tests {
         assert!(error.contains("Not authorized to update metadata"));
 
         // test owner tries but not allowed to change metadata
-        let handle_msg = HandleMsg::SetPublicMetadata {
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "MyNFT".to_string(),
-            metadata: Metadata {
-                name: Some("New Name".to_string()),
-                description: Some("I changed the metadata".to_string()),
-                image: Some("new uri".to_string()),
-            },
+            public_metadata: Some(Metadata {
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("New Name".to_string()),
+                    description: Some("I changed the metadata".to_string()),
+                    image: Some("new uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
+            private_metadata: None,
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
@@ -745,22 +846,34 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: None,
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let handle_msg = HandleMsg::SetPublicMetadata {
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "MyNFT".to_string(),
-            metadata: Metadata {
-                name: Some("New Name".to_string()),
-                description: Some("I changed the metadata".to_string()),
-                image: Some("new uri".to_string()),
-            },
+            public_metadata: Some(Metadata {
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("New Name".to_string()),
+                    description: Some("I changed the metadata".to_string()),
+                    image: Some("new uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
+            private_metadata: None,
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
@@ -778,33 +891,41 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: None,
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let handle_msg = HandleMsg::SetPublicMetadata {
-            token_id: "MyNFT".to_string(),
-            metadata: Metadata {
+        let set_expect = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("New Name".to_string()),
                 description: Some("I changed the metadata".to_string()),
                 image: Some("new uri".to_string()),
-            },
+                ..Extension::default()
+            }),
+        });
+        let handle_msg = HandleMsg::SetMetadata {
+            token_id: "MyNFT".to_string(),
+            public_metadata: set_expect.clone(),
+            private_metadata: None,
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &0u32.to_le_bytes()).unwrap();
-        assert_eq!(pub_meta.name, Some("New Name".to_string()));
-        assert_eq!(
-            pub_meta.description,
-            Some("I changed the metadata".to_string())
-        );
-        assert_eq!(pub_meta.image, Some("new uri".to_string()));
+        assert_eq!(pub_meta, set_expect.unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &0u32.to_le_bytes()).unwrap();
         assert!(priv_meta.is_none());
@@ -821,13 +942,18 @@ mod tests {
         );
 
         // test token does not exist when supply is private
-        let handle_msg = HandleMsg::SetPrivateMetadata {
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "SNIP20".to_string(),
-            metadata: Metadata {
-                name: Some("New Name".to_string()),
-                description: Some("I changed the metadata".to_string()),
-                image: Some("new uri".to_string()),
-            },
+            public_metadata: None,
+            private_metadata: Some(Metadata {
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("New Name".to_string()),
+                    description: Some("I changed the metadata".to_string()),
+                    image: Some("new uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
@@ -846,11 +972,18 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: None,
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -869,22 +1002,34 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: None,
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let handle_msg = HandleMsg::SetPrivateMetadata {
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "MyNFT".to_string(),
-            metadata: Metadata {
-                name: Some("New Name".to_string()),
-                description: Some("I changed the metadata".to_string()),
-                image: Some("new uri".to_string()),
-            },
+            public_metadata: None,
+            private_metadata: Some(Metadata {
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("New Name".to_string()),
+                    description: Some("I changed the metadata".to_string()),
+                    image: Some("new uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
@@ -892,28 +1037,29 @@ mod tests {
         assert!(error.contains("The private metadata of a sealed token can not be modified"));
 
         // test token does not exist when supply is public
-        let handle_msg = HandleMsg::SetPrivateMetadata {
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "SNIP20".to_string(),
-            metadata: Metadata {
-                name: Some("New Name".to_string()),
-                description: Some("I changed the metadata".to_string()),
-                image: Some("new uri".to_string()),
-            },
+            public_metadata: None,
+            private_metadata: Some(Metadata {
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("New Name".to_string()),
+                    description: Some("I changed the metadata".to_string()),
+                    image: Some("new uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
         let error = extract_error_msg(handle_result);
         assert!(error.contains("Token ID: SNIP20 not found"));
 
-        // sanity check, minter changing metadata after owner unwrapped
         let handle_msg = HandleMsg::Reveal {
             token_id: "MyNFT".to_string(),
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("MyNFT"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "MyNFT".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -923,27 +1069,58 @@ mod tests {
         let info_store = ReadonlyPrefixedStorage::new(PREFIX_INFOS, &deps.storage);
         let token: Token = json_load(&info_store, &token_key).unwrap();
         assert!(token.unwrapped);
-        let handle_msg = HandleMsg::SetPrivateMetadata {
+
+        // test setting both token_uri and extension
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "MyNFT".to_string(),
-            metadata: Metadata {
-                name: Some("New Name".to_string()),
-                description: Some("Minter changed the metadata".to_string()),
-                image: Some("new uri".to_string()),
-            },
+            private_metadata: Some(Metadata {
+                token_uri: Some("uri".to_string()),
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
+            public_metadata: None,
+            padding: None,
+        };
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let error = extract_error_msg(handle_result);
+        assert!(error.contains("Metadata can not have BOTH token_uri AND extension"));
+
+        // sanity check, minter changing metadata after owner unwrapped
+        let set_pub = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("New Name Pub".to_string()),
+                description: Some("Minter changed the public metadata".to_string()),
+                image: Some("new uri pub".to_string()),
+                ..Extension::default()
+            }),
+        });
+        let set_priv = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("New Name Priv".to_string()),
+                description: Some("Minter changed the private metadata".to_string()),
+                image: Some("new uri priv".to_string()),
+                ..Extension::default()
+            }),
+        });
+        let handle_msg = HandleMsg::SetMetadata {
+            token_id: "MyNFT".to_string(),
+            public_metadata: set_pub.clone(),
+            private_metadata: set_priv.clone(),
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
+        let pub_meta: Metadata = load(&pub_store, &token_key).unwrap();
+        assert_eq!(pub_meta, set_pub.unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &token_key).unwrap();
-        assert_eq!(priv_meta.name, Some("New Name".to_string()));
-        assert_eq!(
-            priv_meta.description,
-            Some("Minter changed the metadata".to_string())
-        );
-        assert_eq!(priv_meta.image, Some("new uri".to_string()));
-        let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
-        let pub_meta: Option<Metadata> = may_load(&pub_store, &token_key).unwrap();
-        assert!(pub_meta.is_none());
+        assert_eq!(priv_meta, set_priv.unwrap());
 
         // test setting metadata when status prevents it
         let handle_msg = HandleMsg::SetContractStatus {
@@ -952,13 +1129,18 @@ mod tests {
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
-        let handle_msg = HandleMsg::SetPrivateMetadata {
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "MyNFT".to_string(),
-            metadata: Metadata {
-                name: Some("MyNFT".to_string()),
-                description: None,
-                image: Some("uri".to_string()),
-            },
+            public_metadata: None,
+            private_metadata: Some(Metadata {
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: None,
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
@@ -972,13 +1154,18 @@ mod tests {
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
         // test owner trying when not authorized
-        let handle_msg = HandleMsg::SetPrivateMetadata {
+        let handle_msg = HandleMsg::SetMetadata {
             token_id: "MyNFT".to_string(),
-            metadata: Metadata {
-                name: Some("New Name".to_string()),
-                description: Some("I changed the metadata".to_string()),
-                image: Some("new uri".to_string()),
-            },
+            public_metadata: None,
+            private_metadata: Some(Metadata {
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("New Name".to_string()),
+                    description: Some("I changed the metadata".to_string()),
+                    image: Some("new uri".to_string()),
+                    ..Extension::default()
+                }),
+            }),
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
@@ -993,42 +1180,49 @@ mod tests {
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("MyNFT".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
+        let pub_expect = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT".to_string()),
                 description: None,
                 image: Some("uri".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("MyNFT".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: pub_expect.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let handle_msg = HandleMsg::SetPrivateMetadata {
-            token_id: "MyNFT".to_string(),
-            metadata: Metadata {
+        let priv_expect = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("New Name".to_string()),
                 description: Some("Owner changed the metadata".to_string()),
                 image: Some("new uri".to_string()),
-            },
+                ..Extension::default()
+            }),
+        });
+        let handle_msg = HandleMsg::SetMetadata {
+            token_id: "MyNFT".to_string(),
+            public_metadata: None,
+            private_metadata: priv_expect.clone(),
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &token_key).unwrap();
-        assert_eq!(priv_meta.name, Some("New Name".to_string()));
-        assert_eq!(
-            priv_meta.description,
-            Some("Owner changed the metadata".to_string())
-        );
-        assert_eq!(priv_meta.image, Some("new uri".to_string()));
+        assert_eq!(priv_meta, priv_expect.unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &token_key).unwrap();
-        assert_eq!(pub_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(pub_meta.description, None);
-        assert_eq!(pub_meta.image, Some("uri".to_string()));
+        assert_eq!(pub_meta, pub_expect.unwrap());
     }
 
     // test Reveal
@@ -1086,11 +1280,18 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: Some(Metadata {
-                name: Some("MySealedNFT".to_string()),
-                description: Some("Sealed metadata test".to_string()),
-                image: Some("sealed_uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MySealedNFT".to_string()),
+                    description: Some("Sealed metadata test".to_string()),
+                    image: Some("sealed_uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -1128,15 +1329,23 @@ mod tests {
             init_result.err().unwrap()
         );
 
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("MyNFT".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
+        let seal_meta = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MySealedNFT".to_string()),
                 description: Some("Sealed metadata test".to_string()),
                 image: Some("sealed_uri".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("MyNFT".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            private_metadata: seal_meta.clone(),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -1155,9 +1364,6 @@ mod tests {
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("MyNFT"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "MyNFT".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -1169,12 +1375,7 @@ mod tests {
         assert!(priv_meta.is_none());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &token_key).unwrap();
-        assert_eq!(pub_meta.name, Some("MySealedNFT".to_string()));
-        assert_eq!(
-            pub_meta.description,
-            Some("Sealed metadata test".to_string())
-        );
-        assert_eq!(pub_meta.image, Some("sealed_uri".to_string()));
+        assert_eq!(pub_meta, seal_meta.clone().unwrap());
 
         // test trying to unwrap token that has already been unwrapped
         let handle_msg = HandleMsg::Reveal {
@@ -1196,12 +1397,11 @@ mod tests {
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
-                name: Some("MySealedNFT".to_string()),
-                description: Some("Sealed metadata test".to_string()),
-                image: Some("sealed_uri".to_string()),
-            }),
+            private_metadata: seal_meta.clone(),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -1213,12 +1413,7 @@ mod tests {
         let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &token_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MySealedNFT".to_string()));
-        assert_eq!(
-            priv_meta.description,
-            Some("Sealed metadata test".to_string())
-        );
-        assert_eq!(priv_meta.image, Some("sealed_uri".to_string()));
+        assert_eq!(priv_meta, seal_meta.unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Option<Metadata> = may_load(&pub_store, &token_key).unwrap();
         assert!(pub_meta.is_none());
@@ -1271,54 +1466,86 @@ mod tests {
         let error = extract_error_msg(handle_result);
         assert!(error.contains("You do not own token NFT1"));
 
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("NFT1".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
+        let pub1 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("My1".to_string()),
                 description: Some("Public 1".to_string()),
                 image: Some("URI 1".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT1".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: pub1.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("NFT2".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
+        let pub2 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("My2".to_string()),
                 description: Some("Public 2".to_string()),
                 image: Some("URI 2".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT2".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: pub2.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg); // test burn when status prevents it
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("NFT3".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
+        let pub3 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("My3".to_string()),
                 description: Some("Public 3".to_string()),
                 image: Some("URI 3".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT3".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: pub3.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("NFT4".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
+        let pub4 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("My4".to_string()),
                 description: Some("Public 4".to_string()),
                 image: Some("URI 4".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT4".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: pub4.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -1456,9 +1683,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft1_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My1".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 1".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 1".to_string()));
+        assert_eq!(pub_meta, pub1.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft1_key).unwrap();
         assert!(priv_meta.is_none());
@@ -1514,9 +1739,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft1_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My1".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 1".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 1".to_string()));
+        assert_eq!(pub_meta, pub1.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft1_key).unwrap();
         assert!(priv_meta.is_none());
@@ -1571,9 +1794,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft2_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My2".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 2".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 2".to_string()));
+        assert_eq!(pub_meta, pub2.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft2_key).unwrap();
         assert!(priv_meta.is_none());
@@ -1738,9 +1959,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft2_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My2".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 2".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 2".to_string()));
+        assert_eq!(pub_meta, pub2.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft2_key).unwrap();
         assert!(priv_meta.is_none());
@@ -1852,9 +2071,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft1_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My1".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 1".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 1".to_string()));
+        assert_eq!(pub_meta, pub1.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft1_key).unwrap();
         assert!(priv_meta.is_none());
@@ -1891,9 +2108,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft3_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My3".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 3".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 3".to_string()));
+        assert_eq!(pub_meta, pub3.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft3_key).unwrap();
         assert!(priv_meta.is_none());
@@ -1996,9 +2211,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft1_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My1".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 1".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 1".to_string()));
+        assert_eq!(pub_meta, pub1.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft1_key).unwrap();
         assert!(priv_meta.is_none());
@@ -2029,9 +2242,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft3_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My3".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 3".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 3".to_string()));
+        assert_eq!(pub_meta, pub3.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft3_key).unwrap();
         assert!(priv_meta.is_none());
@@ -2116,9 +2327,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft4_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My4".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 4".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 4".to_string()));
+        assert_eq!(pub_meta, pub4.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft4_key).unwrap();
         assert!(priv_meta.is_none());
@@ -2238,9 +2447,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft3_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My3".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 3".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 3".to_string()));
+        assert_eq!(pub_meta, pub3.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft3_key).unwrap();
         assert!(priv_meta.is_none());
@@ -2350,9 +2557,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft3_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My3".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 3".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 3".to_string()));
+        assert_eq!(pub_meta, pub3.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft3_key).unwrap();
         assert!(priv_meta.is_none());
@@ -2464,9 +2669,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft4_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My4".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 4".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 4".to_string()));
+        assert_eq!(pub_meta, pub4.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft3_key).unwrap();
         assert!(priv_meta.is_none());
@@ -2608,9 +2811,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft1_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My1".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 1".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 1".to_string()));
+        assert_eq!(pub_meta, pub1.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft1_key).unwrap();
         assert!(priv_meta.is_none());
@@ -2659,9 +2860,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft3_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My3".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 3".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 3".to_string()));
+        assert_eq!(pub_meta, pub3.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft3_key).unwrap();
         assert!(priv_meta.is_none());
@@ -3139,9 +3338,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft3_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My3".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 3".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 3".to_string()));
+        assert_eq!(pub_meta, pub3.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft3_key).unwrap();
         assert!(priv_meta.is_none());
@@ -3185,9 +3382,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft3_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My3".to_string()));
-        assert_eq!(pub_meta.description, Some("Public 3".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 3".to_string()));
+        assert_eq!(pub_meta, pub3.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft3_key).unwrap();
         assert!(priv_meta.is_none());
@@ -3244,15 +3439,23 @@ mod tests {
             error.contains("Not authorized to grant/revoke transfer permission for token MyNFT")
         );
 
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("MyNFT".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
+        let priv_expect = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT".to_string()),
                 description: Some("metadata".to_string()),
                 image: Some("uri".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("MyNFT".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            private_metadata: priv_expect.clone(),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -3455,9 +3658,7 @@ mod tests {
         assert!(token.unwrapped);
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(priv_meta.description, Some("metadata".to_string()));
-        assert_eq!(priv_meta.image, Some("uri".to_string()));
+        assert_eq!(priv_meta, priv_expect.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Option<Metadata> = may_load(&pub_store, &tok_key).unwrap();
         assert!(pub_meta.is_none());
@@ -3521,9 +3722,7 @@ mod tests {
         assert!(token.unwrapped);
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(priv_meta.description, Some("metadata".to_string()));
-        assert_eq!(priv_meta.image, Some("uri".to_string()));
+        assert_eq!(priv_meta, priv_expect.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Option<Metadata> = may_load(&pub_store, &tok_key).unwrap();
         assert!(pub_meta.is_none());
@@ -3551,15 +3750,23 @@ mod tests {
 
         // used to test auto-setting individual token permissions when only one token
         // of many is approved with a different expiration than an operator's expiration
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("MyNFT2".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
+        let priv2 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT2".to_string()),
                 description: Some("metadata2".to_string()),
                 image: Some("uri2".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("MyNFT2".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            private_metadata: priv2.clone(),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -3568,11 +3775,18 @@ mod tests {
             token_id: Some("MyNFT3".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: Some(Metadata {
-                name: Some("MyNFT3".to_string()),
-                description: Some("metadata3".to_string()),
-                image: Some("uri3".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT3".to_string()),
+                    description: Some("metadata3".to_string()),
+                    image: Some("uri3".to_string()),
+                    ..Extension::default()
+                }),
             }),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -3662,9 +3876,7 @@ mod tests {
         assert!(token.unwrapped);
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok2_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT2".to_string()));
-        assert_eq!(priv_meta.description, Some("metadata2".to_string()));
-        assert_eq!(priv_meta.image, Some("uri2".to_string()));
+        assert_eq!(priv_meta, priv2.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Option<Metadata> = may_load(&pub_store, &tok2_key).unwrap();
         assert!(pub_meta.is_none());
@@ -3736,15 +3948,23 @@ mod tests {
             error.contains("Not authorized to grant/revoke transfer permission for token MyNFT")
         );
 
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("MyNFT".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
+        let priv_expect = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT".to_string()),
                 description: Some("metadata".to_string()),
                 image: Some("uri".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("MyNFT".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            private_metadata: priv_expect.clone(),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -3920,9 +4140,7 @@ mod tests {
         assert!(token.permissions.is_empty());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(priv_meta.description, Some("metadata".to_string()));
-        assert_eq!(priv_meta.image, Some("uri".to_string()));
+        assert_eq!(priv_meta, priv_expect.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Option<Metadata> = may_load(&pub_store, &tok_key).unwrap();
         assert!(pub_meta.is_none());
@@ -4015,9 +4233,7 @@ mod tests {
         assert!(token.unwrapped);
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(priv_meta.description, Some("metadata".to_string()));
-        assert_eq!(priv_meta.image, Some("uri".to_string()));
+        assert_eq!(priv_meta, priv_expect.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Option<Metadata> = may_load(&pub_store, &tok_key).unwrap();
         assert!(pub_meta.is_none());
@@ -4046,9 +4262,7 @@ mod tests {
         assert!(token.unwrapped);
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(priv_meta.description, Some("metadata".to_string()));
-        assert_eq!(priv_meta.image, Some("uri".to_string()));
+        assert_eq!(priv_meta, priv_expect.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Option<Metadata> = may_load(&pub_store, &tok_key).unwrap();
         assert!(pub_meta.is_none());
@@ -4095,9 +4309,7 @@ mod tests {
         assert!(token.unwrapped);
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(priv_meta.description, Some("metadata".to_string()));
-        assert_eq!(priv_meta.image, Some("uri".to_string()));
+        assert_eq!(priv_meta, priv_expect.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Option<Metadata> = may_load(&pub_store, &tok_key).unwrap();
         assert!(pub_meta.is_none());
@@ -4114,15 +4326,23 @@ mod tests {
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("MyNFT2".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
+        let priv2 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT2".to_string()),
                 description: Some("metadata2".to_string()),
                 image: Some("uri2".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("MyNFT2".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            private_metadata: priv2.clone(),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -4131,11 +4351,18 @@ mod tests {
             token_id: Some("MyNFT3".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: Some(Metadata {
-                name: Some("MyNFT3".to_string()),
-                description: Some("metadata3".to_string()),
-                image: Some("uri3".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT3".to_string()),
+                    description: Some("metadata3".to_string()),
+                    image: Some("uri3".to_string()),
+                    ..Extension::default()
+                }),
             }),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -4213,9 +4440,7 @@ mod tests {
         assert!(token.unwrapped);
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok2_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT2".to_string()));
-        assert_eq!(priv_meta.description, Some("metadata2".to_string()));
-        assert_eq!(priv_meta.image, Some("uri2".to_string()));
+        assert_eq!(priv_meta, priv2.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Option<Metadata> = may_load(&pub_store, &tok2_key).unwrap();
         assert!(pub_meta.is_none());
@@ -4262,11 +4487,18 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: Some("metadata".to_string()),
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: Some("metadata".to_string()),
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -4343,15 +4575,26 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: Some("privmetadata".to_string()),
-                image: Some("privuri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: Some("privmetadata".to_string()),
+                    image: Some("privuri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             public_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: Some("pubmetadata".to_string()),
-                image: Some("puburi".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: Some("pubmetadata".to_string()),
+                    image: Some("puburi".to_string()),
+                    ..Extension::default()
+                }),
             }),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -4486,9 +4729,6 @@ mod tests {
             handle_msg,
         );
         // confirm token was removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(!tokens.contains("MyNFT"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: Option<u32> = may_load(&map2idx, "MyNFT".as_bytes()).unwrap();
         assert!(index.is_none());
@@ -4507,7 +4747,8 @@ mod tests {
         let pub_meta: Option<Metadata> = may_load(&pub_store, &tok_key).unwrap();
         assert!(pub_meta.is_none());
         // confirm the tx was logged to both parties
-        let txs = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        assert_eq!(total, 2);
         assert_eq!(txs.len(), 1);
         assert_eq!(txs[0].token_id, "MyNFT".to_string());
         assert_eq!(
@@ -4518,50 +4759,77 @@ mod tests {
             }
         );
         assert_eq!(txs[0].memo, Some("Burn, baby, burn!".to_string()));
-        let tx2 = get_txs(&deps.api, &deps.storage, &bob_raw, 0, 1).unwrap();
+        let (tx2, total) = get_txs(&deps.api, &deps.storage, &bob_raw, 0, 1).unwrap();
+        assert_eq!(total, 1);
         assert_eq!(txs, tx2);
         // confirm charlie's AuthList was removed because the only token was burned
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let auth_list: Option<Vec<AuthList>> = may_load(&auth_store, alice_key).unwrap();
         assert!(auth_list.is_none());
-        // confirm the token was removed form the owner's list
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let owned: Option<HashSet<u32>> = may_load(&owned_store, alice_key).unwrap();
-        assert!(owned.is_none());
+        // confirm the token was removed from the owner's list
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 0);
+        assert!(!inventory.contains(&deps.storage, 0).unwrap());
 
         let transfer_idx = PermissionType::Transfer.to_usize();
 
+        let priv2 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("MyNFT2".to_string()),
+                description: Some("privmetadata2".to_string()),
+                image: Some("privuri2".to_string()),
+                ..Extension::default()
+            }),
+        });
+        let pub2 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                name: Some("MyNFT2".to_string()),
+                description: Some("pubmetadata2".to_string()),
+                image: Some("puburi2".to_string()),
+                ..Extension::default()
+            }),
+        });
         // sanity check: address with token permission burns it
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("MyNFT2".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
-                name: Some("MyNFT2".to_string()),
-                description: Some("privmetadata2".to_string()),
-                image: Some("privuri2".to_string()),
-            }),
-            public_metadata: Some(Metadata {
-                name: Some("MyNFT2".to_string()),
-                description: Some("pubmetadata2".to_string()),
-                image: Some("puburi2".to_string()),
-            }),
+            private_metadata: priv2.clone(),
+            public_metadata: pub2.clone(),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("MyNFT3".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
+        let priv3 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT3".to_string()),
                 description: Some("privmetadata3".to_string()),
                 image: Some("privuri3".to_string()),
+                ..Extension::default()
             }),
-            public_metadata: Some(Metadata {
+        });
+        let pub3 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT3".to_string()),
                 description: Some("pubmetadata3".to_string()),
                 image: Some("puburi3".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("MyNFT3".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            private_metadata: priv3.clone(),
+            public_metadata: pub3.clone(),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -4606,9 +4874,6 @@ mod tests {
             handle_msg,
         );
         // confirm token was removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(!tokens.contains("MyNFT2"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: Option<u32> = may_load(&map2idx, "MyNFT2".as_bytes()).unwrap();
         assert!(index.is_none());
@@ -4627,14 +4892,10 @@ mod tests {
         assert!(token.unwrapped);
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok3_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT3".to_string()));
-        assert_eq!(priv_meta.description, Some("privmetadata3".to_string()));
-        assert_eq!(priv_meta.image, Some("privuri3".to_string()));
+        assert_eq!(priv_meta, priv3.unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &tok3_key).unwrap();
-        assert_eq!(pub_meta.name, Some("MyNFT3".to_string()));
-        assert_eq!(pub_meta.description, Some("pubmetadata3".to_string()));
-        assert_eq!(pub_meta.image, Some("puburi3".to_string()));
+        assert_eq!(pub_meta, pub3.unwrap());
         // confirm the MyNFT2 metadata has been deleted from storage
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &tok2_key).unwrap();
@@ -4643,7 +4904,8 @@ mod tests {
         let pub_meta: Option<Metadata> = may_load(&pub_store, &tok2_key).unwrap();
         assert!(pub_meta.is_none());
         // confirm the tx was logged to both parties
-        let txs = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        assert_eq!(total, 5);
         assert_eq!(txs[0].token_id, "MyNFT2".to_string());
         assert_eq!(
             txs[0].action,
@@ -4653,7 +4915,8 @@ mod tests {
             }
         );
         assert!(txs[0].memo.is_none());
-        let tx2 = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 1).unwrap();
+        let (tx2, total) = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 1).unwrap();
+        assert_eq!(total, 1);
         assert_eq!(txs, tx2);
         // confirm charlie's AuthList was removed because his only approved token was burned
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
@@ -4664,11 +4927,9 @@ mod tests {
         let david_auth = auth_list.iter().find(|a| a.address == david_raw).unwrap();
         assert_eq!(david_auth.tokens[transfer_idx].len(), 1);
         assert!(david_auth.tokens[transfer_idx].contains(&2u32));
-        // confirm the token was removed form the owner's list
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let owned: HashSet<u32> = load(&owned_store, alice_key).unwrap();
-        assert!(!owned.contains(&1u32));
-        assert!(owned.contains(&2u32));
+        // confirm the token was removed from the owner's list
+        assert!(!Inventory::owns(&deps.storage, &alice_raw, 1).unwrap());
+        assert!(Inventory::owns(&deps.storage, &alice_raw, 2).unwrap());
 
         // sanity check: owner burns
         let handle_msg = HandleMsg::BurnNft {
@@ -4678,9 +4939,6 @@ mod tests {
         };
         let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
         // confirm token was removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.is_empty());
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: Option<u32> = may_load(&map2idx, "MyNFT3".as_bytes()).unwrap();
         assert!(index.is_none());
@@ -4699,7 +4957,8 @@ mod tests {
         let pub_meta: Option<Metadata> = may_load(&pub_store, &tok3_key).unwrap();
         assert!(pub_meta.is_none());
         // confirm the tx was logged
-        let txs = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        assert_eq!(total, 6);
         assert_eq!(txs[0].token_id, "MyNFT3".to_string());
         assert_eq!(
             txs[0].action,
@@ -4713,10 +4972,10 @@ mod tests {
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let auth_list: Option<Vec<AuthList>> = may_load(&auth_store, alice_key).unwrap();
         assert!(auth_list.is_none());
-        // confirm the token was removed form the owner's list
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let owned: Option<HashSet<u32>> = may_load(&owned_store, alice_key).unwrap();
-        assert!(owned.is_none());
+        // confirm the token was removed from the owner's list
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 0);
+        assert!(!inventory.contains(&deps.storage, 2).unwrap());
     }
 
     // test batch burn
@@ -4734,6 +4993,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -4783,6 +5045,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -4793,23 +5058,39 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("NFT3".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
+        let priv3 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT3".to_string()),
                 description: Some("privmetadata3".to_string()),
                 image: Some("privuri3".to_string()),
+                ..Extension::default()
             }),
-            public_metadata: Some(Metadata {
+        });
+        let pub3 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT3".to_string()),
                 description: Some("pubmetadata3".to_string()),
                 image: Some("puburi3".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT3".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            private_metadata: priv3.clone(),
+            public_metadata: pub3.clone(),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -4819,6 +5100,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -4828,6 +5112,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -4837,6 +5124,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -4846,6 +5136,9 @@ mod tests {
             owner: Some(HumanAddr("charlie".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -4855,6 +5148,9 @@ mod tests {
             owner: Some(HumanAddr("charlie".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5003,6 +5299,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5013,6 +5312,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5020,16 +5322,11 @@ mod tests {
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT3".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
-                name: Some("MyNFT3".to_string()),
-                description: Some("privmetadata3".to_string()),
-                image: Some("privuri3".to_string()),
-            }),
-            public_metadata: Some(Metadata {
-                name: Some("MyNFT3".to_string()),
-                description: Some("pubmetadata3".to_string()),
-                image: Some("puburi3".to_string()),
-            }),
+            private_metadata: priv3.clone(),
+            public_metadata: pub3.clone(),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5039,6 +5336,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5048,6 +5348,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5057,6 +5360,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5066,6 +5372,9 @@ mod tests {
             owner: Some(HumanAddr("charlie".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5075,6 +5384,9 @@ mod tests {
             owner: Some(HumanAddr("charlie".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5218,6 +5530,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5228,6 +5543,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: Some(false),
             memo: None,
             padding: None,
         };
@@ -5235,16 +5553,11 @@ mod tests {
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT3".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
-                name: Some("MyNFT3".to_string()),
-                description: Some("privmetadata3".to_string()),
-                image: Some("privuri3".to_string()),
-            }),
-            public_metadata: Some(Metadata {
-                name: Some("MyNFT3".to_string()),
-                description: Some("pubmetadata3".to_string()),
-                image: Some("puburi3".to_string()),
-            }),
+            private_metadata: priv3.clone(),
+            public_metadata: pub3.clone(),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5254,6 +5567,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5263,6 +5579,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5272,6 +5591,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5281,6 +5603,9 @@ mod tests {
             owner: Some(HumanAddr("charlie".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: Some(false),
             memo: None,
             padding: None,
         };
@@ -5290,6 +5615,9 @@ mod tests {
             owner: Some(HumanAddr("charlie".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -5444,17 +5772,6 @@ mod tests {
             .unwrap();
         let charlie_key = charlie_raw.as_slice();
         // confirm correct tokens were removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert_eq!(tokens.len(), 3);
-        assert!(!tokens.contains("NFT1"));
-        assert!(tokens.contains("NFT2"));
-        assert!(!tokens.contains("NFT3"));
-        assert!(tokens.contains("NFT4"));
-        assert!(tokens.contains("NFT5"));
-        assert!(!tokens.contains("NFT6"));
-        assert!(!tokens.contains("NFT7"));
-        assert!(!tokens.contains("NFT8"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: Option<u32> = may_load(&map2idx, "NFT1".as_bytes()).unwrap();
         assert!(index.is_none());
@@ -5525,19 +5842,18 @@ mod tests {
         assert_eq!(token.owner, alice_raw);
         assert!(!token.unwrapped);
         // confirm owner lists are correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
         // alice only owns NFT2
-        let alice_owns: HashSet<u32> = load(&owned_store, alice_key).unwrap();
-        assert_eq!(alice_owns.len(), 1);
-        assert!(alice_owns.contains(&1u32));
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 1);
+        assert!(inventory.contains(&deps.storage, 1).unwrap());
         // bob owns NFT4 and NFT5
-        let bob_owns: HashSet<u32> = load(&owned_store, bob_key).unwrap();
-        assert_eq!(bob_owns.len(), 2);
-        assert!(bob_owns.contains(&3u32));
-        assert!(bob_owns.contains(&4u32));
+        let inventory = Inventory::new(&deps.storage, bob_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 2);
+        assert!(inventory.contains(&deps.storage, 3).unwrap());
+        assert!(inventory.contains(&deps.storage, 4).unwrap());
         // charlie does not own any
-        let charlie_owns: Option<HashSet<u32>> = may_load(&owned_store, charlie_key).unwrap();
-        assert!(charlie_owns.is_none());
+        let inventory = Inventory::new(&deps.storage, charlie_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 0);
         // confirm AuthLists are correct
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         // alice gave charlie view metadata permission on NFT2
@@ -5573,7 +5889,8 @@ mod tests {
         let charlie_list: Option<Vec<AuthList>> = may_load(&auth_store, charlie_key).unwrap();
         assert!(charlie_list.is_none());
         // confirm one of the txs
-        let txs = get_txs(&deps.api, &deps.storage, &bob_raw, 0, 3).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &bob_raw, 0, 3).unwrap();
+        assert_eq!(total, 8);
         assert_eq!(txs.len(), 3);
         assert_eq!(txs[0].token_id, "NFT8".to_string());
         assert_eq!(
@@ -5586,7 +5903,8 @@ mod tests {
         assert_eq!(txs[0].memo, Some("Phew!".to_string()));
         assert_eq!(txs[1].memo, Some("Phew!".to_string()));
         assert_eq!(txs[2].memo, Some("Phew!".to_string()));
-        let tx2 = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 1).unwrap();
+        let (tx2, total) = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 1).unwrap();
+        assert_eq!(total, 4);
         assert_eq!(txs[0], tx2[0]);
     }
 
@@ -5605,11 +5923,18 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: Some("metadata".to_string()),
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: Some("metadata".to_string()),
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -5675,19 +6000,32 @@ mod tests {
         let error = extract_error_msg(handle_result);
         assert!(error.contains("You are not authorized to perform this action on token MyNFT"));
 
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("MyNFT".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
+        let priv1 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT".to_string()),
                 description: Some("privmetadata".to_string()),
                 image: Some("privuri".to_string()),
+                ..Extension::default()
             }),
-            public_metadata: Some(Metadata {
+        });
+        let pub1 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT".to_string()),
                 description: Some("pubmetadata".to_string()),
                 image: Some("puburi".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("MyNFT".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            private_metadata: priv1.clone(),
+            public_metadata: pub1.clone(),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -5840,9 +6178,6 @@ mod tests {
             handle_msg,
         );
         // confirm token was not removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("MyNFT"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "MyNFT".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -5878,7 +6213,8 @@ mod tests {
         );
         assert!(token.unwrapped);
         // confirm no transfer tx was logged (latest should be the mint tx)
-        let txs = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        assert_eq!(total, 1);
         assert_eq!(
             txs[0].action,
             TxAction::Mint {
@@ -5887,10 +6223,9 @@ mod tests {
             }
         );
         // confirm the owner list is correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let alice_owns: HashSet<u32> = load(&owned_store, alice_key).unwrap();
-        assert_eq!(alice_owns.len(), 1);
-        assert!(alice_owns.contains(&0u32));
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 1);
+        assert!(inventory.contains(&deps.storage, 0).unwrap());
         // confirm charlie's and bob's AuthList were not changed
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let alice_list: Vec<AuthList> = load(&auth_store, alice_key).unwrap();
@@ -5937,9 +6272,6 @@ mod tests {
             handle_msg,
         );
         // confirm token was not removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("MyNFT"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "MyNFT".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -5955,16 +6287,13 @@ mod tests {
         // confirm the metadata is intact
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(priv_meta.description, Some("privmetadata".to_string()));
-        assert_eq!(priv_meta.image, Some("privuri".to_string()));
+        assert_eq!(priv_meta, priv1.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &tok_key).unwrap();
-        assert_eq!(pub_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(pub_meta.description, Some("pubmetadata".to_string()));
-        assert_eq!(pub_meta.image, Some("puburi".to_string()));
+        assert_eq!(pub_meta, pub1.clone().unwrap());
         // confirm the tx was logged to all involved parties
-        let txs = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        assert_eq!(total, 2);
         assert_eq!(txs.len(), 1);
         assert_eq!(txs[0].token_id, "MyNFT".to_string());
         assert_eq!(
@@ -5976,17 +6305,19 @@ mod tests {
             }
         );
         assert_eq!(txs[0].memo, Some("Xfer it".to_string()));
-        let tx2 = get_txs(&deps.api, &deps.storage, &bob_raw, 0, 1).unwrap();
-        let tx3 = get_txs(&deps.api, &deps.storage, &david_raw, 0, 1).unwrap();
+        let (tx2, total) = get_txs(&deps.api, &deps.storage, &bob_raw, 0, 1).unwrap();
+        assert_eq!(total, 1);
+        let (tx3, total) = get_txs(&deps.api, &deps.storage, &david_raw, 0, 1).unwrap();
+        assert_eq!(total, 1);
         assert_eq!(txs, tx2);
         assert_eq!(tx2, tx3);
         // confirm both owner lists are correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let alice_owns: Option<HashSet<u32>> = may_load(&owned_store, alice_key).unwrap();
-        assert!(alice_owns.is_none());
-        let david_owns: HashSet<u32> = load(&owned_store, david_key).unwrap();
-        assert_eq!(david_owns.len(), 1);
-        assert!(david_owns.contains(&0u32));
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 0);
+        assert!(!inventory.contains(&deps.storage, 0).unwrap());
+        let inventory = Inventory::new(&deps.storage, david_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 1);
+        assert!(inventory.contains(&deps.storage, 0).unwrap());
         // confirm charlie's and bob's AuthList were removed because the only token was xferred
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let auth_list: Option<Vec<AuthList>> = may_load(&auth_store, alice_key).unwrap();
@@ -6030,9 +6361,6 @@ mod tests {
             handle_msg,
         );
         // confirm token was not removed from the list
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("MyNFT"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "MyNFT".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -6048,16 +6376,13 @@ mod tests {
         // confirm the metadata is intact
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(priv_meta.description, Some("privmetadata".to_string()));
-        assert_eq!(priv_meta.image, Some("privuri".to_string()));
+        assert_eq!(priv_meta, priv1.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &tok_key).unwrap();
-        assert_eq!(pub_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(pub_meta.description, Some("pubmetadata".to_string()));
-        assert_eq!(pub_meta.image, Some("puburi".to_string()));
+        assert_eq!(pub_meta, pub1.clone().unwrap());
         // confirm the tx was logged to all involved parties
-        let txs = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 10).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 10).unwrap();
+        assert_eq!(total, 1);
         assert_eq!(txs.len(), 1);
         assert_eq!(txs[0].token_id, "MyNFT".to_string());
         assert_eq!(
@@ -6069,15 +6394,16 @@ mod tests {
             }
         );
         assert_eq!(txs[0].memo, None);
-        let tx2 = get_txs(&deps.api, &deps.storage, &david_raw, 0, 1).unwrap();
+        let (tx2, total) = get_txs(&deps.api, &deps.storage, &david_raw, 0, 1).unwrap();
+        assert_eq!(total, 2);
         assert_eq!(txs, tx2);
         // confirm both owner lists are correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let david_owns: Option<HashSet<u32>> = may_load(&owned_store, david_key).unwrap();
-        assert!(david_owns.is_none());
-        let charlie_owns: HashSet<u32> = load(&owned_store, charlie_key).unwrap();
-        assert_eq!(charlie_owns.len(), 1);
-        assert!(charlie_owns.contains(&0u32));
+        let inventory = Inventory::new(&deps.storage, david_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 0);
+        assert!(!inventory.contains(&deps.storage, 0).unwrap());
+        let inventory = Inventory::new(&deps.storage, charlie_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 1);
+        assert!(inventory.contains(&deps.storage, 0).unwrap());
         // confirm charlie's AuthList was removed because the only token was xferred
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let auth_list: Option<Vec<AuthList>> = may_load(&auth_store, david_key).unwrap();
@@ -6095,9 +6421,6 @@ mod tests {
         };
         let _handle_result = handle(&mut deps, mock_env("charlie", &[]), handle_msg);
         // confirm token was not removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("MyNFT"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "MyNFT".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -6111,7 +6434,8 @@ mod tests {
         assert!(token.permissions.is_empty());
         assert!(token.unwrapped);
         // confirm the tx was logged to all involved parties
-        let txs = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 1).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 1).unwrap();
+        assert_eq!(total, 2);
         assert_eq!(txs[0].token_id, "MyNFT".to_string());
         assert_eq!(
             txs[0].action,
@@ -6122,15 +6446,16 @@ mod tests {
             }
         );
         assert_eq!(txs[0].memo, None);
-        let tx2 = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        let (tx2, total) = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        assert_eq!(total, 3);
         assert_eq!(txs, tx2);
         // confirm both owner lists are correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let charlie_owns: Option<HashSet<u32>> = may_load(&owned_store, charlie_key).unwrap();
-        assert!(charlie_owns.is_none());
-        let alice_owns: HashSet<u32> = load(&owned_store, alice_key).unwrap();
-        assert_eq!(alice_owns.len(), 1);
-        assert!(alice_owns.contains(&0u32));
+        let inventory = Inventory::new(&deps.storage, charlie_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 0);
+        assert!(!inventory.contains(&deps.storage, 0).unwrap());
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 1);
+        assert!(inventory.contains(&deps.storage, 0).unwrap());
         // confirm charlie's AuthList was removed because the only token was xferred
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let auth_list: Option<Vec<AuthList>> = may_load(&auth_store, alice_key).unwrap();
@@ -6155,11 +6480,18 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: Some("metadata".to_string()),
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: Some("metadata".to_string()),
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -6253,6 +6585,9 @@ mod tests {
                     owner: Some(HumanAddr("alice".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -6260,6 +6595,9 @@ mod tests {
                     owner: Some(HumanAddr("alice".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -6267,6 +6605,9 @@ mod tests {
                     owner: Some(HumanAddr("alice".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -6274,6 +6615,9 @@ mod tests {
                     owner: Some(HumanAddr("bob".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -6281,6 +6625,9 @@ mod tests {
                     owner: Some(HumanAddr("bob".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -6288,6 +6635,9 @@ mod tests {
                     owner: Some(HumanAddr("charlie".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
             ],
@@ -6454,6 +6804,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -6464,6 +6817,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -6473,6 +6829,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -6482,6 +6841,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -6491,6 +6853,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -6500,6 +6865,9 @@ mod tests {
             owner: Some(HumanAddr("charlie".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -6640,9 +7008,6 @@ mod tests {
         };
         let _handle_result = handle(&mut deps, mock_env("david", &[]), handle_msg);
         // confirm token was not removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("NFT1"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "NFT1".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -6656,7 +7021,8 @@ mod tests {
         assert!(token.permissions.is_empty());
         assert!(token.unwrapped);
         // confirm transfer txs were logged
-        let txs = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 10).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 10).unwrap();
+        assert_eq!(total, 6);
         assert_eq!(txs.len(), 6);
         assert_eq!(
             txs[2].action,
@@ -6683,20 +7049,19 @@ mod tests {
             }
         );
         // confirm the owner list is correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let alice_owns: HashSet<u32> = load(&owned_store, alice_key).unwrap();
-        assert_eq!(alice_owns.len(), 2);
-        assert!(!alice_owns.contains(&0u32));
-        assert!(alice_owns.contains(&1u32));
-        assert!(alice_owns.contains(&2u32));
-        let bob_owns: HashSet<u32> = load(&owned_store, bob_key).unwrap();
-        assert_eq!(bob_owns.len(), 3);
-        assert!(bob_owns.contains(&0u32));
-        assert!(bob_owns.contains(&3u32));
-        assert!(bob_owns.contains(&4u32));
-        let charlie_owns: HashSet<u32> = load(&owned_store, charlie_key).unwrap();
-        assert_eq!(charlie_owns.len(), 1);
-        assert!(charlie_owns.contains(&5u32));
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 2);
+        assert!(!inventory.contains(&deps.storage, 0).unwrap());
+        assert!(inventory.contains(&deps.storage, 1).unwrap());
+        assert!(inventory.contains(&deps.storage, 2).unwrap());
+        let inventory = Inventory::new(&deps.storage, bob_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 3);
+        assert!(inventory.contains(&deps.storage, 0).unwrap());
+        assert!(inventory.contains(&deps.storage, 3).unwrap());
+        assert!(inventory.contains(&deps.storage, 4).unwrap());
+        let inventory = Inventory::new(&deps.storage, charlie_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 1);
+        assert!(inventory.contains(&deps.storage, 5).unwrap());
         // confirm authLists were updated correctly
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let alice_list: Vec<AuthList> = load(&auth_store, alice_key).unwrap();
@@ -6768,19 +7133,18 @@ mod tests {
         assert_eq!(token.owner, alice_raw);
         assert!(token.permissions.is_empty());
         // confirm the owner list is correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let alice_owns: HashSet<u32> = load(&owned_store, alice_key).unwrap();
-        assert_eq!(alice_owns.len(), 2);
-        assert!(alice_owns.contains(&1u32));
-        assert!(alice_owns.contains(&4u32));
-        let bob_owns: HashSet<u32> = load(&owned_store, bob_key).unwrap();
-        assert_eq!(bob_owns.len(), 2);
-        assert!(bob_owns.contains(&2u32));
-        assert!(bob_owns.contains(&3u32));
-        let charlie_owns: HashSet<u32> = load(&owned_store, charlie_key).unwrap();
-        assert_eq!(charlie_owns.len(), 2);
-        assert!(charlie_owns.contains(&0u32));
-        assert!(charlie_owns.contains(&5u32));
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 2);
+        assert!(inventory.contains(&deps.storage, 1).unwrap());
+        assert!(inventory.contains(&deps.storage, 4).unwrap());
+        let inventory = Inventory::new(&deps.storage, bob_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 2);
+        assert!(inventory.contains(&deps.storage, 2).unwrap());
+        assert!(inventory.contains(&deps.storage, 3).unwrap());
+        let inventory = Inventory::new(&deps.storage, charlie_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 2);
+        assert!(inventory.contains(&deps.storage, 0).unwrap());
+        assert!(inventory.contains(&deps.storage, 5).unwrap());
         // confirm authLists were updated correctly
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let alice_list: Vec<AuthList> = load(&auth_store, alice_key).unwrap();
@@ -6822,6 +7186,9 @@ mod tests {
                     owner: Some(HumanAddr("alice".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -6829,6 +7196,9 @@ mod tests {
                     owner: Some(HumanAddr("alice".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -6836,6 +7206,9 @@ mod tests {
                     owner: Some(HumanAddr("alice".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -6843,6 +7216,9 @@ mod tests {
                     owner: Some(HumanAddr("bob".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -6850,6 +7226,9 @@ mod tests {
                     owner: Some(HumanAddr("bob".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -6857,6 +7236,9 @@ mod tests {
                     owner: Some(HumanAddr("charlie".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
             ],
@@ -6918,12 +7300,12 @@ mod tests {
         match query_answer {
             QueryAnswer::TokenList { tokens } => {
                 let expected = vec![
-                    "NFT1".to_string(),
+                    "NFT6".to_string(),
                     "NFT2".to_string(),
                     "NFT3".to_string(),
                     "NFT4".to_string(),
+                    "NFT1".to_string(),
                     "NFT5".to_string(),
-                    "NFT6".to_string(),
                 ];
                 assert_eq!(tokens, expected);
             }
@@ -6931,7 +7313,8 @@ mod tests {
         }
         let xfer4 = Tx {
             tx_id: 8,
-            blockheight: 12345,
+            block_height: 12345,
+            block_time: 1571797419,
             token_id: "NFT4".to_string(),
             memo: Some("test memo".to_string()),
             action: TxAction::Transfer {
@@ -6942,7 +7325,8 @@ mod tests {
         };
         let xfer1 = Tx {
             tx_id: 9,
-            blockheight: 12345,
+            block_height: 12345,
+            block_time: 1571797419,
             token_id: "NFT1".to_string(),
             memo: None,
             action: TxAction::Transfer {
@@ -6960,22 +7344,8 @@ mod tests {
         let query_result = query(&deps, query_msg);
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
-            QueryAnswer::TransactionHistory { txs } => {
-                assert_eq!(txs[1], xfer1);
-                assert_eq!(txs[2], xfer4);
-            }
-            _ => panic!("unexpected"),
-        }
-        let query_msg = QueryMsg::TransactionHistory {
-            address: HumanAddr("charlie".to_string()),
-            viewing_key: "ckey".to_string(),
-            page: None,
-            page_size: None,
-        };
-        let query_result = query(&deps, query_msg);
-        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
-        match query_answer {
-            QueryAnswer::TransactionHistory { txs } => {
+            QueryAnswer::TransactionHistory { total, txs } => {
+                assert_eq!(total, 6);
                 assert_eq!(txs[1], xfer1);
                 assert_eq!(txs[2], xfer4);
             }
@@ -7018,11 +7388,18 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: Some("metadata".to_string()),
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: Some("metadata".to_string()),
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -7036,6 +7413,7 @@ mod tests {
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         let handle_msg = HandleMsg::SendNft {
             contract: HumanAddr("bob".to_string()),
+            receiver_info: None,
             token_id: "MyNFT".to_string(),
             msg: None,
             memo: None,
@@ -7062,6 +7440,7 @@ mod tests {
         // test token not found when supply is public
         let handle_msg = HandleMsg::SendNft {
             contract: HumanAddr("bob".to_string()),
+            receiver_info: None,
             token_id: "MyNFT".to_string(),
             msg: None,
             memo: None,
@@ -7082,6 +7461,7 @@ mod tests {
         // test token not found when supply is private
         let handle_msg = HandleMsg::SendNft {
             contract: HumanAddr("bob".to_string()),
+            receiver_info: None,
             token_id: "MyNFT".to_string(),
             msg: None,
             memo: None,
@@ -7091,19 +7471,32 @@ mod tests {
         let error = extract_error_msg(handle_result);
         assert!(error.contains("You are not authorized to perform this action on token MyNFT"));
 
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("MyNFT".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            private_metadata: Some(Metadata {
+        let priv1 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT".to_string()),
                 description: Some("privmetadata".to_string()),
                 image: Some("privuri".to_string()),
+                ..Extension::default()
             }),
-            public_metadata: Some(Metadata {
+        });
+        let pub1 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("MyNFT".to_string()),
                 description: Some("pubmetadata".to_string()),
                 image: Some("puburi".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("MyNFT".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            private_metadata: priv1.clone(),
+            public_metadata: pub1.clone(),
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -7122,6 +7515,7 @@ mod tests {
         let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
         let handle_msg = HandleMsg::SendNft {
             contract: HumanAddr("bob".to_string()),
+            receiver_info: None,
             token_id: "MyNFT".to_string(),
             msg: None,
             memo: None,
@@ -7141,6 +7535,7 @@ mod tests {
         let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
         let handle_msg = HandleMsg::SendNft {
             contract: HumanAddr("bob".to_string()),
+            receiver_info: None,
             token_id: "MyNFT".to_string(),
             msg: None,
             memo: None,
@@ -7178,6 +7573,7 @@ mod tests {
         let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
         let handle_msg = HandleMsg::SendNft {
             contract: HumanAddr("charlie".to_string()),
+            receiver_info: None,
             token_id: "MyNFT".to_string(),
             msg: None,
             memo: None,
@@ -7226,20 +7622,11 @@ mod tests {
             .canonical_address(&HumanAddr("david".to_string()))
             .unwrap();
         let david_key = david_raw.as_slice();
-        let transfer_idx = PermissionType::Transfer.to_usize();
-        let view_owner_idx = PermissionType::ViewOwner.to_usize();
-        let view_meta_idx = PermissionType::ViewMetadata.to_usize();
 
-        // confirm that sending to the same address that owns the token does not
-        // erase the current permissions
-        let handle_msg = HandleMsg::RegisterReceiveNft {
-            code_hash: "alice code hash".to_string(),
-            also_implements_batch_receive_nft: None,
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("alice", &[]), handle_msg);
+        // confirm that sending to the same address that owns the token throws an error
         let handle_msg = HandleMsg::SendNft {
             contract: HumanAddr("alice".to_string()),
+            receiver_info: None,
             token_id: "MyNFT".to_string(),
             msg: None,
             memo: Some("Xfer it".to_string()),
@@ -7265,93 +7652,10 @@ mod tests {
             },
             handle_msg,
         );
-        // confirm that the ReceiveNft msg was created
-        let handle_resp = handle_result.unwrap();
-        let messages = handle_resp.messages;
-        let mut msg_fr_al = to_binary(&Snip721ReceiveMsg::ReceiveNft {
-            sender: HumanAddr("alice".to_string()),
-            token_id: "MyNFT".to_string(),
-            msg: None,
-        })
-        .unwrap();
-        let msg_fr_al = space_pad(&mut msg_fr_al.0, 256usize);
-        let msg_fr_al = CosmosMsg::Wasm(WasmMsg::Execute {
-            contract_addr: HumanAddr("alice".to_string()),
-            callback_code_hash: "alice code hash".to_string(),
-            msg: Binary(msg_fr_al.to_vec()),
-            send: vec![],
-        });
-        assert_eq!(messages[0], msg_fr_al);
-
-        // confirm token was not removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("MyNFT"));
-        let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
-        let index: u32 = load(&map2idx, "MyNFT".as_bytes()).unwrap();
-        let token_key = index.to_le_bytes();
-        let map2id = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_ID, &deps.storage);
-        let id: String = load(&map2id, &token_key).unwrap();
-        assert_eq!("MyNFT".to_string(), id);
-        // confirm token info is the same
-        let info_store = ReadonlyPrefixedStorage::new(PREFIX_INFOS, &deps.storage);
-        let token: Token = json_load(&info_store, &tok_key).unwrap();
-        assert_eq!(token.owner, alice_raw);
-        assert_eq!(token.permissions.len(), 2);
-        let charlie_tok_perm = token
-            .permissions
-            .iter()
-            .find(|p| p.address == charlie_raw)
-            .unwrap();
-        assert_eq!(charlie_tok_perm.expirations[view_meta_idx], None);
-        assert_eq!(
-            charlie_tok_perm.expirations[transfer_idx],
-            Some(Expiration::AtHeight(10))
-        );
-        assert_eq!(charlie_tok_perm.expirations[view_owner_idx], None);
-        let bob_tok_perm = token
-            .permissions
-            .iter()
-            .find(|p| p.address == bob_raw)
-            .unwrap();
-        assert_eq!(bob_tok_perm.expirations[view_meta_idx], None);
-        assert_eq!(bob_tok_perm.expirations[transfer_idx], None);
-        assert_eq!(
-            bob_tok_perm.expirations[view_owner_idx],
-            Some(Expiration::Never)
-        );
-        assert!(token.unwrapped);
-        // confirm no transfer tx was logged (latest should be the mint tx)
-        let txs = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
-        assert_eq!(
-            txs[0].action,
-            TxAction::Mint {
-                minter: HumanAddr("admin".to_string()),
-                recipient: HumanAddr("alice".to_string()),
-            }
-        );
-        // confirm the owner list is correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let alice_owns: HashSet<u32> = load(&owned_store, alice_key).unwrap();
-        assert_eq!(alice_owns.len(), 1);
-        assert!(alice_owns.contains(&0u32));
-        // confirm charlie's and bob's AuthList were not changed
-        let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
-        let alice_list: Vec<AuthList> = load(&auth_store, alice_key).unwrap();
-        assert_eq!(alice_list.len(), 2);
-        let charlie_auth = alice_list
-            .iter()
-            .find(|a| a.address == charlie_raw)
-            .unwrap();
-        assert_eq!(charlie_auth.tokens[transfer_idx].len(), 1);
-        assert!(charlie_auth.tokens[transfer_idx].contains(&0u32));
-        assert!(charlie_auth.tokens[view_meta_idx].is_empty());
-        assert!(charlie_auth.tokens[view_owner_idx].is_empty());
-        let bob_auth = alice_list.iter().find(|a| a.address == bob_raw).unwrap();
-        assert_eq!(bob_auth.tokens[view_owner_idx].len(), 1);
-        assert!(bob_auth.tokens[view_owner_idx].contains(&0u32));
-        assert!(bob_auth.tokens[view_meta_idx].is_empty());
-        assert!(bob_auth.tokens[transfer_idx].is_empty());
+        let error = extract_error_msg(handle_result);
+        assert!(error.contains(
+            "Attempting to transfer token ID: MyNFT to the address that already owns it"
+        ));
 
         // sanity check: operator sends
         // msg to go with ReceiveNft
@@ -7371,6 +7675,7 @@ mod tests {
         let _handle_result = handle(&mut deps, mock_env("david", &[]), handle_msg);
         let handle_msg = HandleMsg::SendNft {
             contract: HumanAddr("david".to_string()),
+            receiver_info: None,
             token_id: "MyNFT".to_string(),
             msg: send_msg.clone(),
             memo: Some("Xfer it".to_string()),
@@ -7414,9 +7719,6 @@ mod tests {
         });
         assert_eq!(messages[0], msg_fr_al);
         // confirm token was not removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("MyNFT"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "MyNFT".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -7432,16 +7734,13 @@ mod tests {
         // confirm the metadata is intact
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(priv_meta.description, Some("privmetadata".to_string()));
-        assert_eq!(priv_meta.image, Some("privuri".to_string()));
+        assert_eq!(priv_meta, priv1.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &tok_key).unwrap();
-        assert_eq!(pub_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(pub_meta.description, Some("pubmetadata".to_string()));
-        assert_eq!(pub_meta.image, Some("puburi".to_string()));
+        assert_eq!(pub_meta, pub1.clone().unwrap());
         // confirm the tx was logged to all involved parties
-        let txs = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        assert_eq!(total, 2);
         assert_eq!(txs.len(), 1);
         assert_eq!(txs[0].token_id, "MyNFT".to_string());
         assert_eq!(
@@ -7453,17 +7752,19 @@ mod tests {
             }
         );
         assert_eq!(txs[0].memo, Some("Xfer it".to_string()));
-        let tx2 = get_txs(&deps.api, &deps.storage, &bob_raw, 0, 1).unwrap();
-        let tx3 = get_txs(&deps.api, &deps.storage, &david_raw, 0, 1).unwrap();
+        let (tx2, total) = get_txs(&deps.api, &deps.storage, &bob_raw, 0, 1).unwrap();
+        assert_eq!(total, 1);
+        let (tx3, total) = get_txs(&deps.api, &deps.storage, &david_raw, 0, 1).unwrap();
+        assert_eq!(total, 1);
         assert_eq!(txs, tx2);
         assert_eq!(tx2, tx3);
         // confirm both owner lists are correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let alice_owns: Option<HashSet<u32>> = may_load(&owned_store, alice_key).unwrap();
-        assert!(alice_owns.is_none());
-        let david_owns: HashSet<u32> = load(&owned_store, david_key).unwrap();
-        assert_eq!(david_owns.len(), 1);
-        assert!(david_owns.contains(&0u32));
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 0);
+        assert!(!inventory.contains(&deps.storage, 0).unwrap());
+        let inventory = Inventory::new(&deps.storage, david_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 1);
+        assert!(inventory.contains(&deps.storage, 0).unwrap());
         // confirm charlie's and bob's AuthList were removed because the only token was xferred
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let auth_list: Option<Vec<AuthList>> = may_load(&auth_store, alice_key).unwrap();
@@ -7472,7 +7773,8 @@ mod tests {
         let auth_list: Option<Vec<AuthList>> = may_load(&auth_store, david_key).unwrap();
         assert!(auth_list.is_none());
 
-        // sanity check: address with token permission xfers it to itself
+        // sanity check: address with token permission xfers it to itself and specifies its
+        // code hash and that it implements BatchReceiveNft in the SendNft msg
         let handle_msg = HandleMsg::Approve {
             spender: HumanAddr("charlie".to_string()),
             token_id: "MyNFT".to_string(),
@@ -7480,15 +7782,12 @@ mod tests {
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("david", &[]), handle_msg);
-        // register charlie's ReceiveNft
-        let handle_msg = HandleMsg::RegisterReceiveNft {
-            code_hash: "charlie code hash".to_string(),
-            also_implements_batch_receive_nft: None,
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("charlie", &[]), handle_msg);
         let handle_msg = HandleMsg::SendNft {
             contract: HumanAddr("charlie".to_string()),
+            receiver_info: Some(ReceiverInfo {
+                recipient_code_hash: "supplied in the send".to_string(),
+                also_implements_batch_receive_nft: Some(true),
+            }),
             token_id: "MyNFT".to_string(),
             msg: send_msg.clone(),
             memo: None,
@@ -7514,27 +7813,25 @@ mod tests {
             },
             handle_msg,
         );
-        // confirm the receive nft msg was created
+        // confirm the batch receive nft msg was created
         let handle_resp = handle_result.unwrap();
         let messages = handle_resp.messages;
-        let mut msg_fr_dv = to_binary(&Snip721ReceiveMsg::ReceiveNft {
-            sender: HumanAddr("david".to_string()),
-            token_id: "MyNFT".to_string(),
+        let mut msg_fr_dv = to_binary(&Snip721ReceiveMsg::BatchReceiveNft {
+            sender: HumanAddr("charlie".to_string()),
+            from: HumanAddr("david".to_string()),
+            token_ids: vec!["MyNFT".to_string()],
             msg: send_msg.clone(),
         })
         .unwrap();
         let msg_fr_dv = space_pad(&mut msg_fr_dv.0, 256usize);
         let msg_fr_dv = CosmosMsg::Wasm(WasmMsg::Execute {
             contract_addr: HumanAddr("charlie".to_string()),
-            callback_code_hash: "charlie code hash".to_string(),
+            callback_code_hash: "supplied in the send".to_string(),
             msg: Binary(msg_fr_dv.to_vec()),
             send: vec![],
         });
         assert_eq!(messages[0], msg_fr_dv);
         // confirm token was not removed from the list
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("MyNFT"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "MyNFT".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -7550,16 +7847,13 @@ mod tests {
         // confirm the metadata is intact
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Metadata = load(&priv_store, &tok_key).unwrap();
-        assert_eq!(priv_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(priv_meta.description, Some("privmetadata".to_string()));
-        assert_eq!(priv_meta.image, Some("privuri".to_string()));
+        assert_eq!(priv_meta, priv1.clone().unwrap());
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &tok_key).unwrap();
-        assert_eq!(pub_meta.name, Some("MyNFT".to_string()));
-        assert_eq!(pub_meta.description, Some("pubmetadata".to_string()));
-        assert_eq!(pub_meta.image, Some("puburi".to_string()));
+        assert_eq!(pub_meta, pub1.clone().unwrap());
         // confirm the tx was logged to all involved parties
-        let txs = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 10).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 10).unwrap();
+        assert_eq!(total, 1);
         assert_eq!(txs.len(), 1);
         assert_eq!(txs[0].token_id, "MyNFT".to_string());
         assert_eq!(
@@ -7571,15 +7865,16 @@ mod tests {
             }
         );
         assert_eq!(txs[0].memo, None);
-        let tx2 = get_txs(&deps.api, &deps.storage, &david_raw, 0, 1).unwrap();
+        let (tx2, total) = get_txs(&deps.api, &deps.storage, &david_raw, 0, 1).unwrap();
+        assert_eq!(total, 2);
         assert_eq!(txs, tx2);
         // confirm both owner lists are correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let david_owns: Option<HashSet<u32>> = may_load(&owned_store, david_key).unwrap();
-        assert!(david_owns.is_none());
-        let charlie_owns: HashSet<u32> = load(&owned_store, charlie_key).unwrap();
-        assert_eq!(charlie_owns.len(), 1);
-        assert!(charlie_owns.contains(&0u32));
+        let inventory = Inventory::new(&deps.storage, david_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 0);
+        assert!(!inventory.contains(&deps.storage, 0).unwrap());
+        let inventory = Inventory::new(&deps.storage, charlie_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 1);
+        assert!(inventory.contains(&deps.storage, 0).unwrap());
         // confirm charlie's AuthList was removed because the only token was xferred
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let auth_list: Option<Vec<AuthList>> = may_load(&auth_store, david_key).unwrap();
@@ -7588,9 +7883,13 @@ mod tests {
         let auth_list: Option<Vec<AuthList>> = may_load(&auth_store, charlie_key).unwrap();
         assert!(auth_list.is_none());
 
-        // sanity check: owner sends
+        // sanity check: owner sends and specifies a code hash in the send
         let handle_msg = HandleMsg::SendNft {
             contract: HumanAddr("alice".to_string()),
+            receiver_info: Some(ReceiverInfo {
+                recipient_code_hash: "supplied in the send".to_string(),
+                also_implements_batch_receive_nft: None,
+            }),
             token_id: "MyNFT".to_string(),
             msg: send_msg.clone(),
             memo: None,
@@ -7609,15 +7908,12 @@ mod tests {
         let msg_fr_ch = space_pad(&mut msg_fr_ch.0, 256usize);
         let msg_fr_ch = CosmosMsg::Wasm(WasmMsg::Execute {
             contract_addr: HumanAddr("alice".to_string()),
-            callback_code_hash: "alice code hash".to_string(),
+            callback_code_hash: "supplied in the send".to_string(),
             msg: Binary(msg_fr_ch.to_vec()),
             send: vec![],
         });
         assert_eq!(messages[0], msg_fr_ch);
         // confirm token was not removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("MyNFT"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "MyNFT".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -7631,7 +7927,8 @@ mod tests {
         assert!(token.permissions.is_empty());
         assert!(token.unwrapped);
         // confirm the tx was logged to all involved parties
-        let txs = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 1).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &charlie_raw, 0, 1).unwrap();
+        assert_eq!(total, 2);
         assert_eq!(txs[0].token_id, "MyNFT".to_string());
         assert_eq!(
             txs[0].action,
@@ -7642,15 +7939,16 @@ mod tests {
             }
         );
         assert_eq!(txs[0].memo, None);
-        let tx2 = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        let (tx2, total) = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 1).unwrap();
+        assert_eq!(total, 3);
         assert_eq!(txs, tx2);
         // confirm both owner lists are correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let charlie_owns: Option<HashSet<u32>> = may_load(&owned_store, charlie_key).unwrap();
-        assert!(charlie_owns.is_none());
-        let alice_owns: HashSet<u32> = load(&owned_store, alice_key).unwrap();
-        assert_eq!(alice_owns.len(), 1);
-        assert!(alice_owns.contains(&0u32));
+        let inventory = Inventory::new(&deps.storage, charlie_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 0);
+        assert!(!inventory.contains(&deps.storage, 0).unwrap());
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 1);
+        assert!(inventory.contains(&deps.storage, 0).unwrap());
         // confirm charlie's AuthList was removed because the only token was xferred
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let auth_list: Option<Vec<AuthList>> = may_load(&auth_store, alice_key).unwrap();
@@ -7675,11 +7973,18 @@ mod tests {
             token_id: Some("MyNFT".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: Some(Metadata {
-                name: Some("MyNFT".to_string()),
-                description: Some("metadata".to_string()),
-                image: Some("uri".to_string()),
+                token_uri: None,
+                extension: Some(Extension {
+                    name: Some("MyNFT".to_string()),
+                    description: Some("metadata".to_string()),
+                    image: Some("uri".to_string()),
+                    ..Extension::default()
+                }),
             }),
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: Some("Mint it baby!".to_string()),
             padding: None,
         };
@@ -7693,6 +7998,7 @@ mod tests {
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         let sends = vec![Send {
             contract: HumanAddr("bob".to_string()),
+            receiver_info: None,
             token_ids: vec!["MyNFT".to_string()],
             msg: None,
             memo: None,
@@ -7720,6 +8026,7 @@ mod tests {
         );
         let sends = vec![Send {
             contract: HumanAddr("bob".to_string()),
+            receiver_info: None,
             token_ids: vec!["MyNFT".to_string()],
             msg: None,
             memo: None,
@@ -7773,6 +8080,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -7783,6 +8093,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -7792,6 +8105,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -7801,6 +8117,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -7810,6 +8129,9 @@ mod tests {
             owner: Some(HumanAddr("bob".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -7819,6 +8141,9 @@ mod tests {
             owner: Some(HumanAddr("charlie".to_string())),
             private_metadata: None,
             public_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -7934,12 +8259,6 @@ mod tests {
         };
         let _handle_result = handle(&mut deps, mock_env("charlie", &[]), handle_msg);
         let handle_msg = HandleMsg::RegisterReceiveNft {
-            code_hash: "bob code hash".to_string(),
-            also_implements_batch_receive_nft: None,
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
-        let handle_msg = HandleMsg::RegisterReceiveNft {
             code_hash: "charlie code hash".to_string(),
             also_implements_batch_receive_nft: None,
             padding: None,
@@ -7956,18 +8275,24 @@ mod tests {
         let sends = vec![
             Send {
                 contract: HumanAddr("charlie".to_string()),
+                receiver_info: None,
                 token_ids: vec!["NFT1".to_string()],
                 msg: send_msg.clone(),
                 memo: None,
             },
             Send {
                 contract: HumanAddr("alice".to_string()),
+                receiver_info: None,
                 token_ids: vec!["NFT1".to_string()],
                 msg: send_msg.clone(),
                 memo: None,
             },
             Send {
                 contract: HumanAddr("bob".to_string()),
+                receiver_info: Some(ReceiverInfo {
+                    recipient_code_hash: "supplied in the send".to_string(),
+                    also_implements_batch_receive_nft: None,
+                }),
                 token_ids: vec!["NFT1".to_string()],
                 msg: send_msg.clone(),
                 memo: None,
@@ -8008,15 +8333,12 @@ mod tests {
         let msg_fr_al = space_pad(&mut msg_fr_al.0, 256usize);
         let msg_fr_al = CosmosMsg::Wasm(WasmMsg::Execute {
             contract_addr: HumanAddr("bob".to_string()),
-            callback_code_hash: "bob code hash".to_string(),
+            callback_code_hash: "supplied in the send".to_string(),
             msg: Binary(msg_fr_al.to_vec()),
             send: vec![],
         });
         assert_eq!(messages[1], msg_fr_al);
         // confirm token was not removed from the maps
-        let token_store = ReadonlyPrefixedStorage::new(PREFIX_TOKENS, &deps.storage);
-        let tokens: HashSet<String> = load(&token_store, &0u32.to_le_bytes()).unwrap();
-        assert!(tokens.contains("NFT1"));
         let map2idx = ReadonlyPrefixedStorage::new(PREFIX_MAP_TO_INDEX, &deps.storage);
         let index: u32 = load(&map2idx, "NFT1".as_bytes()).unwrap();
         let token_key = index.to_le_bytes();
@@ -8030,7 +8352,8 @@ mod tests {
         assert!(token.permissions.is_empty());
         assert!(token.unwrapped);
         // confirm transfer txs were logged
-        let txs = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 10).unwrap();
+        let (txs, total) = get_txs(&deps.api, &deps.storage, &alice_raw, 0, 10).unwrap();
+        assert_eq!(total, 6);
         assert_eq!(txs.len(), 6);
         assert_eq!(
             txs[2].action,
@@ -8057,20 +8380,19 @@ mod tests {
             }
         );
         // confirm the owner list is correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let alice_owns: HashSet<u32> = load(&owned_store, alice_key).unwrap();
-        assert_eq!(alice_owns.len(), 2);
-        assert!(!alice_owns.contains(&0u32));
-        assert!(alice_owns.contains(&1u32));
-        assert!(alice_owns.contains(&2u32));
-        let bob_owns: HashSet<u32> = load(&owned_store, bob_key).unwrap();
-        assert_eq!(bob_owns.len(), 3);
-        assert!(bob_owns.contains(&0u32));
-        assert!(bob_owns.contains(&3u32));
-        assert!(bob_owns.contains(&4u32));
-        let charlie_owns: HashSet<u32> = load(&owned_store, charlie_key).unwrap();
-        assert_eq!(charlie_owns.len(), 1);
-        assert!(charlie_owns.contains(&5u32));
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 2);
+        assert!(!inventory.contains(&deps.storage, 0).unwrap());
+        assert!(inventory.contains(&deps.storage, 1).unwrap());
+        assert!(inventory.contains(&deps.storage, 2).unwrap());
+        let inventory = Inventory::new(&deps.storage, bob_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 3);
+        assert!(inventory.contains(&deps.storage, 0).unwrap());
+        assert!(inventory.contains(&deps.storage, 3).unwrap());
+        assert!(inventory.contains(&deps.storage, 4).unwrap());
+        let inventory = Inventory::new(&deps.storage, charlie_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 1);
+        assert!(inventory.contains(&deps.storage, 5).unwrap());
         // confirm authLists were updated correctly
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let alice_list: Vec<AuthList> = load(&auth_store, alice_key).unwrap();
@@ -8109,25 +8431,31 @@ mod tests {
         let sends = vec![
             Send {
                 contract: HumanAddr("charlie".to_string()),
+                receiver_info: None,
                 token_ids: vec!["NFT1".to_string()],
                 msg: send_msg.clone(),
                 memo: None,
             },
             Send {
                 contract: HumanAddr("alice".to_string()),
+                receiver_info: None,
                 token_ids: vec!["NFT5".to_string()],
                 msg: send_msg.clone(),
                 memo: None,
             },
             Send {
                 contract: HumanAddr("bob".to_string()),
+                receiver_info: Some(ReceiverInfo {
+                    recipient_code_hash: "supplied in the send".to_string(),
+                    also_implements_batch_receive_nft: Some(true),
+                }),
                 token_ids: vec!["NFT3".to_string()],
                 msg: send_msg.clone(),
                 memo: None,
             },
         ];
 
-        // test bobs trnsfer two of his tokens and one of alice's
+        // test bob transfers two of his tokens and one of alice's
         let handle_msg = HandleMsg::BatchSendNft {
             sends,
             padding: None,
@@ -8151,16 +8479,17 @@ mod tests {
         });
         assert_eq!(messages[0], msg_fr_b);
         assert_eq!(messages.len(), 2);
-        let mut msg_fr_al = to_binary(&Snip721ReceiveMsg::ReceiveNft {
-            sender: HumanAddr("alice".to_string()),
-            token_id: "NFT3".to_string(),
+        let mut msg_fr_al = to_binary(&Snip721ReceiveMsg::BatchReceiveNft {
+            sender: HumanAddr("bob".to_string()),
+            from: HumanAddr("alice".to_string()),
+            token_ids: vec!["NFT3".to_string()],
             msg: send_msg.clone(),
         })
         .unwrap();
         let msg_fr_al = space_pad(&mut msg_fr_al.0, 256usize);
         let msg_fr_al = CosmosMsg::Wasm(WasmMsg::Execute {
             contract_addr: HumanAddr("bob".to_string()),
-            callback_code_hash: "bob code hash".to_string(),
+            callback_code_hash: "supplied in the send".to_string(),
             msg: Binary(msg_fr_al.to_vec()),
             send: vec![],
         });
@@ -8177,19 +8506,18 @@ mod tests {
         assert_eq!(token.owner, alice_raw);
         assert!(token.permissions.is_empty());
         // confirm the owner list is correct
-        let owned_store = ReadonlyPrefixedStorage::new(PREFIX_OWNED, &deps.storage);
-        let alice_owns: HashSet<u32> = load(&owned_store, alice_key).unwrap();
-        assert_eq!(alice_owns.len(), 2);
-        assert!(alice_owns.contains(&1u32));
-        assert!(alice_owns.contains(&4u32));
-        let bob_owns: HashSet<u32> = load(&owned_store, bob_key).unwrap();
-        assert_eq!(bob_owns.len(), 2);
-        assert!(bob_owns.contains(&2u32));
-        assert!(bob_owns.contains(&3u32));
-        let charlie_owns: HashSet<u32> = load(&owned_store, charlie_key).unwrap();
-        assert_eq!(charlie_owns.len(), 2);
-        assert!(charlie_owns.contains(&0u32));
-        assert!(charlie_owns.contains(&5u32));
+        let inventory = Inventory::new(&deps.storage, alice_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 2);
+        assert!(inventory.contains(&deps.storage, 1).unwrap());
+        assert!(inventory.contains(&deps.storage, 4).unwrap());
+        let inventory = Inventory::new(&deps.storage, bob_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 2);
+        assert!(inventory.contains(&deps.storage, 2).unwrap());
+        assert!(inventory.contains(&deps.storage, 3).unwrap());
+        let inventory = Inventory::new(&deps.storage, charlie_raw.clone()).unwrap();
+        assert_eq!(inventory.info.count, 2);
+        assert!(inventory.contains(&deps.storage, 0).unwrap());
+        assert!(inventory.contains(&deps.storage, 5).unwrap());
         // confirm authLists were updated correctly
         let auth_store = ReadonlyPrefixedStorage::new(PREFIX_AUTHLIST, &deps.storage);
         let alice_list: Vec<AuthList> = load(&auth_store, alice_key).unwrap();
@@ -8231,6 +8559,9 @@ mod tests {
                     owner: Some(HumanAddr("alice".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -8238,6 +8569,9 @@ mod tests {
                     owner: Some(HumanAddr("alice".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -8245,6 +8579,9 @@ mod tests {
                     owner: Some(HumanAddr("alice".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -8252,6 +8589,9 @@ mod tests {
                     owner: Some(HumanAddr("bob".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -8259,6 +8599,9 @@ mod tests {
                     owner: Some(HumanAddr("bob".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
                 Mint {
@@ -8266,6 +8609,9 @@ mod tests {
                     owner: Some(HumanAddr("charlie".to_string())),
                     private_metadata: None,
                     public_metadata: None,
+                    royalty_info: None,
+                    serial_number: None,
+                    transferable: None,
                     memo: None,
                 },
             ],
@@ -8315,12 +8661,14 @@ mod tests {
             sends: vec![
                 Send {
                     contract: HumanAddr("charlie".to_string()),
+                    receiver_info: None,
                     token_ids: vec!["NFT2".to_string(), "NFT3".to_string(), "NFT4".to_string()],
                     msg: send_msg.clone(),
                     memo: Some("test memo".to_string()),
                 },
                 Send {
                     contract: HumanAddr("alice".to_string()),
+                    receiver_info: None,
                     token_ids: vec!["NFT3".to_string(), "NFT4".to_string(), "NFT6".to_string()],
                     msg: None,
                     memo: None,
@@ -8424,8 +8772,8 @@ mod tests {
             QueryAnswer::TokenList { tokens } => {
                 let expected = vec![
                     "NFT1".to_string(),
-                    "NFT3".to_string(),
                     "NFT4".to_string(),
+                    "NFT3".to_string(),
                     "NFT6".to_string(),
                 ];
                 assert_eq!(tokens, expected);
@@ -8434,7 +8782,8 @@ mod tests {
         }
         let xfer6 = Tx {
             tx_id: 11,
-            blockheight: 12345,
+            block_height: 12345,
+            block_time: 1571797419,
             token_id: "NFT6".to_string(),
             memo: None,
             action: TxAction::Transfer {
@@ -8445,7 +8794,8 @@ mod tests {
         };
         let xfer3 = Tx {
             tx_id: 7,
-            blockheight: 12345,
+            block_height: 12345,
+            block_time: 1571797419,
             token_id: "NFT3".to_string(),
             memo: Some("test memo".to_string()),
             action: TxAction::Transfer {
@@ -8463,7 +8813,8 @@ mod tests {
         let query_result = query(&deps, query_msg);
         let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
         match query_answer {
-            QueryAnswer::TransactionHistory { txs } => {
+            QueryAnswer::TransactionHistory { total, txs } => {
+                assert_eq!(total, 8);
                 assert_eq!(txs[3], xfer3);
                 assert_eq!(txs[0], xfer6);
             }
@@ -9058,6 +9409,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -9067,6 +9421,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -9076,6 +9433,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -9267,6 +9627,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -9276,6 +9639,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -9285,6 +9651,9 @@ mod tests {
             owner: Some(HumanAddr("alice".to_string())),
             public_metadata: None,
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -9593,15 +9962,23 @@ mod tests {
         let error = extract_error_msg(handle_result);
         assert!(error.contains("You do not own token NFT1"));
 
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("NFT1".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
+        let pub1 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("My1".to_string()),
                 description: Some("Pub 1".to_string()),
                 image: Some("URI 1".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT1".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: pub1.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -9707,9 +10084,7 @@ mod tests {
         assert!(token.unwrapped);
         let pub_store = ReadonlyPrefixedStorage::new(PREFIX_PUB_META, &deps.storage);
         let pub_meta: Metadata = load(&pub_store, &nft1_key).unwrap();
-        assert_eq!(pub_meta.name, Some("My1".to_string()));
-        assert_eq!(pub_meta.description, Some("Pub 1".to_string()));
-        assert_eq!(pub_meta.image, Some("URI 1".to_string()));
+        assert_eq!(pub_meta, pub1.clone().unwrap());
         let priv_store = ReadonlyPrefixedStorage::new(PREFIX_PRIV_META, &deps.storage);
         let priv_meta: Option<Metadata> = may_load(&priv_store, &nft1_key).unwrap();
         assert!(priv_meta.is_none());
@@ -9944,28 +10319,44 @@ mod tests {
             .unwrap();
         let nft1_key = 0u32.to_le_bytes();
         let nft2_key = 1u32.to_le_bytes();
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("NFT1".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
+        let pub1 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("My1".to_string()),
                 description: Some("Pub 1".to_string()),
                 image: Some("URI 1".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT1".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: pub1.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let handle_msg = HandleMsg::MintNft {
-            token_id: Some("NFT2".to_string()),
-            owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
+        let pub2 = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
                 name: Some("My2".to_string()),
                 description: Some("Pub 2".to_string()),
                 image: Some("URI 2".to_string()),
+                ..Extension::default()
             }),
+        });
+        let handle_msg = HandleMsg::MintNft {
+            token_id: Some("NFT2".to_string()),
+            owner: Some(HumanAddr("alice".to_string())),
+            public_metadata: pub2.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -9999,12 +10390,11 @@ mod tests {
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT1".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
-                name: Some("My1".to_string()),
-                description: Some("Pub 1".to_string()),
-                image: Some("URI 1".to_string()),
-            }),
+            public_metadata: pub1.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -10012,12 +10402,11 @@ mod tests {
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT2".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
-                name: Some("My2".to_string()),
-                description: Some("Pub 2".to_string()),
-                image: Some("URI 2".to_string()),
-            }),
+            public_metadata: pub2.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -10322,12 +10711,11 @@ mod tests {
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT1".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
-                name: Some("My1".to_string()),
-                description: Some("Pub 1".to_string()),
-                image: Some("URI 1".to_string()),
-            }),
+            public_metadata: pub1.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -10335,12 +10723,11 @@ mod tests {
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT2".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
-                name: Some("My2".to_string()),
-                description: Some("Pub 2".to_string()),
-                image: Some("URI 2".to_string()),
-            }),
+            public_metadata: pub2.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -10511,12 +10898,11 @@ mod tests {
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT1".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
-                name: Some("My1".to_string()),
-                description: Some("Pub 1".to_string()),
-                image: Some("URI 1".to_string()),
-            }),
+            public_metadata: pub1.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };
@@ -10524,12 +10910,11 @@ mod tests {
         let handle_msg = HandleMsg::MintNft {
             token_id: Some("NFT2".to_string()),
             owner: Some(HumanAddr("alice".to_string())),
-            public_metadata: Some(Metadata {
-                name: Some("My2".to_string()),
-                description: Some("Pub 2".to_string()),
-                image: Some("URI 2".to_string()),
-            }),
+            public_metadata: pub2.clone(),
             private_metadata: None,
+            royalty_info: None,
+            serial_number: None,
+            transferable: None,
             memo: None,
             padding: None,
         };

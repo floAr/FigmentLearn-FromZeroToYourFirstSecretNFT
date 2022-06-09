@@ -1,18 +1,31 @@
 <script lang="ts">
+
 	import { onMount } from 'svelte';
+	import { getToken } from '../actions/get-token';
+	import { burn } from '../actions/burn';
 
 	export let id: number;
+	export let viewingKey: string;
+	export let codeHash: string;
+	export let contractAddress: string;
+	export let onBurn;
+
 
 	let token: {
 		public_metadata: {
-			name: string;
-			description: string;
-			image: string;
+			extension: {
+				name: string;
+				description: string;
+				image: string;
+			}
 		};
 		private_metadata: {
-			name: string;
-			description: string;
-			image: string;
+			extension: {
+				name: string;
+				description: string;
+				image: string;
+			}
+
 		};
 	};
 
@@ -22,14 +35,27 @@
 	let name = undefined;
 
 	onMount(async () => {
-		const res = await fetch(`/api/get-token/${id}`);
-		token = await res.json();
-		console.log('got', token);
-		background = token.private_metadata.name;
-		cloth = token.private_metadata.description;
-		eye = token.private_metadata.image;
-		name = token.public_metadata.name;
+		const res = await getToken({
+			contractAddress,
+			codeHash,
+			id,
+			viewingKey
+		});
+		token = res.nft_dossier;
+		background = token.private_metadata.extension.name;
+		cloth = token.private_metadata.extension.description;
+		eye = token.private_metadata.extension.image;
+		name = token.public_metadata.extension.name;
 	});
+
+	const handleBurn = async () => {
+		await burn({
+			id,
+			contractAddress,
+			codeHash
+		})
+		onBurn();
+	}
 </script>
 
 <div>
@@ -44,6 +70,9 @@
 				<div class="image" style="background-image: url('https://{cloth}.ipfs.dweb.link/')" />
 			</div>
 			<h3 style="text-align: center; padding: 5px;">{name}</h3>
+			<div>
+				<button class="full-width" on:click={handleBurn}>Burn</button>
+			</div>
 		</div>
 	{:else}
 		<div class="loader" />
@@ -51,6 +80,9 @@
 </div>
 
 <style>
+	button {
+		cursor: pointer;
+	}
 	.card {
 		/* Add shadows to create the "card" effect */
 		box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2);
@@ -94,5 +126,8 @@
 		100% {
 			transform: rotate(360deg);
 		}
+	}
+	.full-width {
+		width: 100%;
 	}
 </style>

@@ -1,6 +1,6 @@
 use std::any::type_name;
 
-use cosmwasm_std::{Api, CanonicalAddr, ReadonlyStorage, StdError, StdResult, Storage};
+use cosmwasm_std::{Api, BlockInfo, CanonicalAddr, ReadonlyStorage, StdError, StdResult, Storage};
 use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage};
 
 use secret_toolkit::{
@@ -19,10 +19,14 @@ pub const CONFIG_KEY: &[u8] = b"config";
 pub const BLOCK_KEY: &[u8] = b"blockinfo";
 /// storage key for minters
 pub const MINTERS_KEY: &[u8] = b"minters";
+/// storage key for this contract's address
+pub const MY_ADDRESS_KEY: &[u8] = b"myaddr";
 /// storage key for prng seed
 pub const PRNG_SEED_KEY: &[u8] = b"prngseed";
-/// prefix for storage of the token ids
-pub const PREFIX_TOKENS: &[u8] = b"tokens";
+/// storage key for the contract instantiator
+pub const CREATOR_KEY: &[u8] = b"creator";
+/// storage key for the default RoyaltyInfo to use if none is supplied when minting
+pub const DEFAULT_ROYALTY_KEY: &[u8] = b"defaultroy";
 /// prefix for storage that maps ids to indices
 pub const PREFIX_MAP_TO_INDEX: &[u8] = b"map2idx";
 /// prefix for storage that maps indices to ids
@@ -33,12 +37,14 @@ pub const PREFIX_INFOS: &[u8] = b"infos";
 pub const PREFIX_PUB_META: &[u8] = b"publicmeta";
 /// prefix for the storage of private metadata
 pub const PREFIX_PRIV_META: &[u8] = b"privatemeta";
+/// prefix for the storage of royalty information
+pub const PREFIX_ROYALTY_INFO: &[u8] = b"royalty";
+/// prefix for the storage of mint run information
+pub const PREFIX_MINT_RUN: &[u8] = b"mintrun";
 /// prefix for storage of txs
 pub const PREFIX_TXS: &[u8] = b"rawtxs";
 /// prefix for storage of tx ids
 pub const PREFIX_TX_IDS: &[u8] = b"txids";
-/// prefix for storage of an owner's list of tokens
-pub const PREFIX_OWNED: &[u8] = b"owned";
 /// prefix for storage of owner's list of "all" permissions
 pub const PREFIX_ALL_PERMISSIONS: &[u8] = b"allpermissions";
 /// prefix for storage of owner's list of tokens permitted to addresses
@@ -49,6 +55,10 @@ pub const PREFIX_OWNER_PRIV: &[u8] = b"ownerpriv";
 pub const PREFIX_VIEW_KEY: &[u8] = b"viewkeys";
 /// prefix for the storage of the code hashes of contract's that have implemented ReceiveNft
 pub const PREFIX_RECEIVERS: &[u8] = b"receivers";
+/// prefix for the storage of mint run numbers
+pub const PREFIX_MINT_RUN_NUM: &[u8] = b"runnum";
+/// prefix for the storage of revoked permits
+pub const PREFIX_REVOKED_PERMITS: &str = "revoke";
 
 /// Token contract config
 #[derive(Serialize, Debug, Deserialize, Clone, PartialEq)]
@@ -63,6 +73,8 @@ pub struct Config {
     pub mint_cnt: u32,
     /// count of tx
     pub tx_cnt: u64,
+    /// token count
+    pub token_cnt: u32,
     /// contract status
     pub status: u8,
     /// are token IDs/count public
@@ -117,7 +129,9 @@ pub struct StoredTx {
     /// tx id
     pub tx_id: u64,
     /// the block containing this tx
-    pub blockheight: u64,
+    pub block_height: u64,
+    /// the time (in seconds since 01/01/1970) of the block containing this tx
+    pub block_time: u64,
     /// token id
     pub token_id: String,
     /// tx type and specifics
@@ -168,7 +182,8 @@ impl StoredTx {
         };
         let tx = Tx {
             tx_id: self.tx_id,
-            blockheight: self.blockheight,
+            block_height: self.block_height,
+            block_time: self.block_time,
             token_id: self.token_id,
             action,
             memo: self.memo,
@@ -184,7 +199,7 @@ impl StoredTx {
 ///
 /// * `storage` - a mutable reference to the storage this item should go to
 /// * `config` - a mutable reference to the contract Config
-/// * `blockheight` - the block containing this tx
+/// * `block` - a reference to the current BlockInfo
 /// * `token_id` - token id being minted
 /// * `from` - the previouis owner's address
 /// * `sender` - optional address that sent the token
@@ -194,7 +209,7 @@ impl StoredTx {
 pub fn store_transfer<S: Storage>(
     storage: &mut S,
     config: &mut Config,
-    blockheight: u64,
+    block: &BlockInfo,
     token_id: String,
     from: CanonicalAddr,
     sender: Option<CanonicalAddr>,
@@ -208,7 +223,8 @@ pub fn store_transfer<S: Storage>(
     };
     let tx = StoredTx {
         tx_id: config.tx_cnt,
-        blockheight,
+        block_height: block.height,
+        block_time: block.time,
         token_id,
         action,
         memo,
@@ -239,7 +255,7 @@ pub fn store_transfer<S: Storage>(
 ///
 /// * `storage` - a mutable reference to the storage this item should go to
 /// * `config` - a mutable reference to the contract Config
-/// * `blockheight` - the block containing this tx
+/// * `block` - a reference to the current BlockInfo
 /// * `token_id` - token id being minted
 /// * `minter` - the minter's address
 /// * `recipient` - the recipient's address
@@ -247,7 +263,7 @@ pub fn store_transfer<S: Storage>(
 pub fn store_mint<S: Storage>(
     storage: &mut S,
     config: &mut Config,
-    blockheight: u64,
+    block: &BlockInfo,
     token_id: String,
     minter: CanonicalAddr,
     recipient: CanonicalAddr,
@@ -256,7 +272,8 @@ pub fn store_mint<S: Storage>(
     let action = StoredTxAction::Mint { minter, recipient };
     let tx = StoredTx {
         tx_id: config.tx_cnt,
-        blockheight,
+        block_height: block.height,
+        block_time: block.time,
         token_id,
         action,
         memo,
@@ -279,7 +296,7 @@ pub fn store_mint<S: Storage>(
 ///
 /// * `storage` - a mutable reference to the storage this item should go to
 /// * `config` - a mutable reference to the contract Config
-/// * `blockheight` - the block containing this tx
+/// * `block` - a reference to the current BlockInfo
 /// * `token_id` - token id being minted
 /// * `owner` - the previous owner's address
 /// * `burner` - optional address that burnt the token
@@ -287,7 +304,7 @@ pub fn store_mint<S: Storage>(
 pub fn store_burn<S: Storage>(
     storage: &mut S,
     config: &mut Config,
-    blockheight: u64,
+    block: &BlockInfo,
     token_id: String,
     owner: CanonicalAddr,
     burner: Option<CanonicalAddr>,
@@ -296,7 +313,8 @@ pub fn store_burn<S: Storage>(
     let action = StoredTxAction::Burn { owner, burner };
     let tx = StoredTx {
         tx_id: config.tx_cnt,
-        blockheight,
+        block_height: block.height,
+        block_time: block.time,
         token_id,
         action,
         memo,
@@ -330,7 +348,7 @@ fn append_tx_for_addr<S: Storage>(
     store.push(&tx_id)
 }
 
-/// Returns StdResult<Vec<Tx>> of the txs to display
+/// Returns StdResult<(Vec<Tx>, u64)> of the txs to display and the total count of txs
 ///
 /// # Arguments
 ///
@@ -345,7 +363,7 @@ pub fn get_txs<A: Api, S: ReadonlyStorage>(
     address: &CanonicalAddr,
     page: u32,
     page_size: u32,
-) -> StdResult<Vec<Tx>> {
+) -> StdResult<(Vec<Tx>, u64)> {
     let id_store =
         ReadonlyPrefixedStorage::multilevel(&[PREFIX_TX_IDS, address.as_slice()], storage);
 
@@ -354,8 +372,9 @@ pub fn get_txs<A: Api, S: ReadonlyStorage>(
     let id_store = if let Some(result) = AppendStore::<u64, _>::attach(&id_store) {
         result?
     } else {
-        return Ok(vec![]);
+        return Ok((vec![], 0));
     };
+    let count = id_store.len() as u64;
     // access tx storage
     let tx_store = ReadonlyPrefixedStorage::new(PREFIX_TXS, storage);
     // Take `page_size` txs starting from the latest tx, potentially skipping `page * page_size`
@@ -374,7 +393,7 @@ pub fn get_txs<A: Api, S: ReadonlyStorage>(
         })
         .collect();
 
-    txs
+    txs.map(|t| (t, count))
 }
 
 /// permission to view token info/transfer tokens
