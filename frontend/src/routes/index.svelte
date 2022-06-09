@@ -22,11 +22,14 @@
 		const vk = window.localStorage.getItem('viewingKey');
 		if (vk) viewingKey = vk;
 		secretjs = await login();
-		const resp = await getTokens({
-			contractAddress,
-			codeHash
-		});
-		tokens = resp.token_list.tokens;
+		if (contractAddress) {
+			const resp = await getTokens({
+				contractAddress,
+				codeHash
+			});
+
+			tokens = resp.token_list.tokens;
+		}
 	});
 
 	let minting = false;
@@ -134,7 +137,7 @@ secretd tx compute instantiate $CODE_ID "$INIT" --from a --label "my counter" -y
 		<button class="full-width p-15 border-solid text-center text-bold" on:click={handleCreateNewContract}>1. Instantiate New Contract</button>
 		{#if contractAddress}
 		<div class="p-20 border-solid">
-			<div><label class="mr-5">Contract:</label></div>
+			<div><p class="mr-5">Contract: </p></div>
 			<div class="flex h-50">
 				
 				<input type="text" value={contractAddress} disabled class="px-5 flex-grow mr-5" />
