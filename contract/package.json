@@ -6,6 +6,6 @@
   "dependencies": {
     "@iov/crypto": "^2.5.0",
     "dotenv": "^10.0.0",
-    "secretjs": "^0.11.0"
+    "secretjs": "^0.17.5"
   }
 }
